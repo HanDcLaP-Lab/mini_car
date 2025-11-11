@@ -5,9 +5,9 @@
   * @brief          : Main program body
   ******************************************************************************
   * mini_car_race
-  * v4.1.1
-  * 速度60脉冲/1ms
-	* 双PD 未完成
+  * v4.2.4
+	* 速度60脉冲/1ms
+	* 状态判断
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -21,6 +21,7 @@
 #include "stdio.h"
 #include "math.h"
 #include "stdbool.h"
+#include "stdlib.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -30,6 +31,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -69,13 +71,57 @@ static void MX_TIM4_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+#define QUEUE_SIZE 20
 int fputc(int ch, FILE *f)
 {
   HAL_UART_Transmit(&huart3, (uint8_t *)&ch, 1, 0xffff);
   return ch;
 }
-float gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z;//陀螺仪数据
+typedef struct {
+    uint16_t data[QUEUE_SIZE];
+    uint8_t front;  // 队头指针
+    uint8_t tail;   // 队尾指针
+} Queue;
+void initQueue(Queue *q) {// 初始化队列
+    q->front = 0;
+    q->tail = 0;
+}
+bool isEmpty(Queue *q) {// 检查队列是否为空
+    return q->front == q->tail;
+}
+bool isFull(Queue *q) {// 检查队列是否已满
+    return (q->tail + 1) % QUEUE_SIZE == q->front;
+}
+bool enqueue(Queue *q, uint16_t value) {// 入队
+    if (isFull(q)) {
+        printf("队列已满，无法入队！\n");
+			  return false;
+    }
+    q->data[q->tail] = value;
+    q->tail = (q->tail + 1) % QUEUE_SIZE;
+		return true;
+}
+bool dequeue(Queue *q) {// 出队
+    if (isEmpty(q)) {
+        printf("队列为空，无法出队！\n");
+        return false;
+    }
+    q->front = (q->front + 1) % QUEUE_SIZE;
+    return true;
+}
+bool getFront(Queue *q, uint16_t *value) {// 获取队头元素
+    if (isEmpty(q)) {
+        //printf("队列为空！\n");
+        return false;
+    }
+    *value = q->data[q->front];
+    return true;
+}
 
+// 获取队列长度
+int getSize(Queue *q) {
+    return (q->tail - q->front + QUEUE_SIZE) % QUEUE_SIZE;
+}
 //---------------------一元卡尔曼滤波------------------
 typedef struct {
     float x;      // 状态变量（估计的速度/脉冲数）
@@ -93,7 +139,7 @@ void Kalman_Init(KalmanFilter1 *kf, float q, float r, float initial_value) {
     kf->p = 1;
     kf->k = 0;
 }
-KalmanFilter1 encoderSpeedL,encoderSpeedR,encoderSpeedANG,encoderOutputPWML,encoderOutputPWMR;//卡尔曼定义
+KalmanFilter1 encoderSpeedL,encoderSpeedR,encoderROT;//卡尔曼定义
 
 // 卡尔曼滤波更新函数
 float Kalman_Update(KalmanFilter1 *kf, float measurement) {
@@ -116,14 +162,7 @@ float integral; // 积分
 float output; // 输出
 float Kp, Ki, Kd; // 
 };
-struct PIDController_DualPD {
-int16_t targetVal; // 目标
-float currentError; // 当前误差
-float preError; // 先前误差
-float derivative; // 微分
-float output; // 输出
-float Kp, Kp2, Kd,gKd; // 
-};
+
 void ComputePID(struct PIDController *pid, int16_t measuredVal) {
 pid->preError = pid->currentError;   //误差更新
 pid->currentError = pid->targetVal - measuredVal;  
@@ -139,59 +178,238 @@ pid->integral = -integralLimit;
 pid->output = pid->Kp * pid->currentError + pid->Ki * pid->integral + pid->Kd * pid->derivative; //pid输出
 
 }
-
-void ComputePID_DualPD(struct PIDController_DualPD *pid, float measuredVal,int16_t measuredVal_gyro){
-	pid->preError = pid->currentError;   //误差更新
-  pid->currentError = pid->targetVal - measuredVal;  
-	pid->derivative = pid->currentError - pid->preError;
-	pid->output=pid->Kp * pid->currentError + pid->Kp2 * pid->currentError * fabs(pid->currentError) + pid->Kd * pid->derivative + pid->gKd * measuredVal_gyro;
-}
+float gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z;//陀螺仪数据
 struct PIDController L={.Kp=50,.Ki=0.6,.Kd=0.1,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};
 struct PIDController R={.Kp=55,.Ki=0.6,.Kd=0.1,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};   //PID调参
-struct PIDController_DualPD ROT={.Kp=1.7,.Kp2=0.015,.Kd=0,.gKd=-0.6,.targetVal=0,.currentError=0,.preError=0,.derivative=0}; 
+struct PIDController ROT={.Kp=1.43,.Ki=0,.Kd=3.8,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //转向
+struct PIDController ANG={.Kp=0.2,.Ki=0,.Kd=0.02,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //角速度
+
+int16_t L_measureVal,R_measureVal,ANG_measureVal,Dir_measureVal,pwm=0;
+int16_t MUX_Weight[12]={590,-290,-25,-13,-6,-4,4,6,13,25,290,590};
+int16_t UARTCounter=0,DEVCounter=0,TIMECounter=0,ANGCounter=0;
+uint16_t current_time=0;
+int16_t last_pwm_L=0,last_pwm_R=0;
+float speed_factor = 1.0;
+bool STOPFlag=false,TURNFlag = false;
+Queue qenterSAW;
+#define defultSpeed 60     //[speed]默认速度
+#define maxSpeed 160       //[speed]最大速度
+#define maxDEV 750         //[stop]最大偏出赛道的时间
+#define maxTIME 12000      //[stop]此时间后停车
+#define warnANG 150        //[stop]角速度预警，大于此速度开始计时
+#define maxANG 1000        //[stop]空转限，角速度连续此时间大于预警值，将停止
+#define sharpROT 800       //[sharp]“急弯”态的MUXVal输出
+#define enterSAWcount 2         //[saw]可以判定“锯齿”态的1s内连续大幅偏移数
+#define enterSAWtime 400
+#define timeRECOVERING 500  //[recovering]“恢复”态时长，用于直角弯检测消抖
+#define timeUART 20        //[uart]每次UART发送间隔的中断数
+#define minsharpFactor 0.02
+#define dersharpFactor 0.0035 
+typedef enum {
+    STRAIGHT,    //0
+    GENTLE_CURVE,//1 
+    SHARP_TURN,  //2
+    EDGE,        //3
+    RECOVERING,  //4
+    SAWTOOTH,    //5
+	  OUTLINE_DEFAULT,//6
+	  OUTLINE_SHARP//7
+} STATE;
+
+STATE current_state = STRAIGHT;
+STATE last_state = STRAIGHT;int16_t LEDCounter = 0;
+uint16_t sawENTERCounter=0;//static
+float sharp_factor=1.0;
+uint16_t recCounter = 0;
+float computeMUXVal(uint16_t *mux_value) {
+	static uint8_t sawENTERlastside=0; //0无1左2右
+	static uint8_t SHARPlastside=0;
+  static float last_reliable_error = 0;
+	
+	float centroid=0;
+	
+  LEDCounter = 0;
+  
+  int8_t LCounter = 0, RCounter = 0;
+  int8_t Lmost = 12, Rmost = -1;
+  // 读取传感器并统计
+  for(int i = 0; i <= 11; i++) {
+    if(MUX_GET_CHANNEL(*mux_value, i)) {
+      if(i < 6) LCounter++; else RCounter++;
+      if(i < Lmost) Lmost = i;
+      if(i > Rmost) Rmost = i;
+      LEDCounter++;
+		  centroid += i;
+    }
+  }
+	if(LEDCounter > 0) centroid/=LEDCounter;    
+  
+	//SAWTOOTH进入退出
+	if((Lmost == 0 || Rmost == 11)){
+	  if(LCounter > RCounter && (sawENTERlastside == 2 || sawENTERlastside == 0)){
+		  if(!enqueue(&qenterSAW,current_time))STOPFlag = true;
+			sawENTERlastside = 1;
+		}
+		if(LCounter < RCounter && (sawENTERlastside == 1 || sawENTERlastside == 0)){
+		  if(!enqueue(&qenterSAW,current_time))STOPFlag = true;
+			sawENTERlastside = 2;
+		}
+	}
+	if(current_state == SAWTOOTH && getSize(&qenterSAW) < enterSAWcount)current_state =STRAIGHT;
+	if(getSize(&qenterSAW) >= enterSAWcount)current_state = SAWTOOTH;
+	
+	uint16_t qfront=0;
+	if(getFront(&qenterSAW,&qfront)){ //删除关注时间以外的极点
+	  if(current_time - qfront > enterSAWtime)dequeue(&qenterSAW);
+	}
+	
+	
+		//出线判断
+	if(LEDCounter == 0) {
+    DEVCounter++;
+    if(DEVCounter > maxDEV) STOPFlag = true;
+		if(current_state != SAWTOOTH && current_state != OUTLINE_SHARP && current_state != OUTLINE_DEFAULT){
+			if(last_state == SHARP_TURN || last_state == RECOVERING) {
+			  current_state = OUTLINE_SHARP;
+				sharp_factor = 1.0;
+			}
+		  else current_state = OUTLINE_DEFAULT;
+		  
+		}
+  } else {
+    DEVCounter = 0;
+  }
+	
+	  // 状态判断
+  if(current_state != RECOVERING && LEDCounter != 0 && current_state != SAWTOOTH){
+		if(LEDCounter == 12)current_state = STRAIGHT;//道路交叉
+		else
+    if(abs(LCounter-RCounter) <= 3 && LEDCounter <= 4 && Lmost != 0 && Rmost != 11) {
+      current_state = STRAIGHT;
+    } else if(((LCounter >= 6 && Lmost == 0 && Rmost != 11) ||  
+               (RCounter >= 6 && Rmost == 11 && Lmost != 0) )
+               && LEDCounter >=6		) {
+      current_state = SHARP_TURN;
+			SHARPlastside = LCounter > RCounter ? 1:2;
+    } else if(LEDCounter >= 3) {
+      current_state = GENTLE_CURVE;
+    } else if(LEDCounter >= 1) { 
+      current_state = EDGE;
+    } else {
+      current_state = STRAIGHT; 
+    }
+  }
+		
+  //状态恢复检测：从急弯转出至RECOVERING
+  if((last_state == SHARP_TURN  && current_state != SHARP_TURN && current_state != OUTLINE_SHARP && current_state != OUTLINE_DEFAULT) 
+		|| last_state == OUTLINE_SHARP && current_state != OUTLINE_SHARP && current_state != OUTLINE_DEFAULT) {
+    current_state = RECOVERING;
+    recCounter = 0;
+  }
+  // RECOVERING状态计时
+  if(current_state == RECOVERING) {
+    recCounter++;
+    if(recCounter >= timeRECOVERING) { // 恢复timeRECOVERING秒后回到正常状态
+      current_state = STRAIGHT;
+    }
+	}
+	
+	last_state = current_state;
+	
+  //输出计算	
+  float result = 0;
+  float base_error = (centroid - 5.5) * 50; // 基础偏差 [-275, 275]
+  switch(current_state) {
+    case STRAIGHT:
+      result = base_error; // 正常响应
+			speed_factor = 1.2;
+      break;
+
+    case GENTLE_CURVE:
+      result = base_error * 1.7f; // 适度增强
+	    speed_factor = 1.0;
+      break;
+
+    case SHARP_TURN:
+      result = SHARPlastside == 1 ? -sharpROT : sharpROT;
+			speed_factor = 0.05;
+      break;
+    case OUTLINE_SHARP:
+			result = SHARPlastside == 1 ? -sharpROT * sharp_factor: sharpROT * sharp_factor;
+		  if(sharp_factor > minsharpFactor)sharp_factor = sharp_factor - dersharpFactor;
+		  speed_factor = 0.05; 
+		  break;
+		case OUTLINE_DEFAULT:
+			result = last_reliable_error;
+		  if(result > 500)result = 500;
+		  else if(result <-500)result = -500;
+		  speed_factor = 0.85;
+		  break;
+    case EDGE:
+      for(int i = 0; i <= 11; i++) {
+        result += MUX_GET_CHANNEL(*mux_value, i) * MUX_Weight[i];//传统方法
+      }
+			result *=0.8;
+		  speed_factor = 1.0;
+      break;        
+
+    case RECOVERING:
+      result = base_error * 0.7f;
+		  speed_factor = 1.0;
+      break;
+
+    case SAWTOOTH:
+			
+			if(LEDCounter != 0)
+				/*
+        for(int i = 0; i <= 11; i++) {
+          result += MUX_GET_CHANNEL(*mux_value, i) * MUX_Weight[i];传统方法
+        }*/
+			result = base_error * 1.3
+			;
+				else result = last_reliable_error * 1.4;
+      speed_factor = 1.0;
+      break;
+	}
+        
+  // 保存可靠误差值
+  if(LEDCounter > 0) {
+    last_reliable_error = result;
+  }
+	  if(UARTCounter%timeUART==0){                                                                    ////////////
+    printf(" %d %d %.2f\r\n", current_state,getSize(&qenterSAW),result);}                           ////////////
+		
+  return result;
+}
 
 //-----------------------中断回调---------------------
-int16_t L_measureVal,R_measureVal,ANG_measureVal,Dir_measureVal,pwm=0;
-float MUX_Weight[12]={-110,-55,-14,-7,-3,-1,1,3,7,14,55,110};
-int16_t UARTCounter=0,DEVCounter=0,TIMECounter=0,ANGCounter=0;
-int16_t last_pwm_L=0,last_pwm_R=0;
-bool STOPFlag=false;
-#define maxSpeed 180
-#define maxDEV 500
-#define maxTIME 12000
-#define maxANG 1000
-#define defultSpeed 0
-float computeMUXVal(uint16_t *mux_value){
-  int16_t LEDCounter=0,temp=0;
-	for(int i=0;i<=11;i++){
-      temp+=MUX_Weight[i]*MUX_GET_CHANNEL(*mux_value,i);  //灯偏右，车偏左，为正/ 
-			LEDCounter+=MUX_GET_CHANNEL(*mux_value,i);
-    }
-		if(LEDCounter==0)DEVCounter++;else DEVCounter=0; //出线
-		if(DEVCounter>maxDEV)STOPFlag=true;
-		return temp/LEDCounter;
-}
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-	TIMECounter++;
-	if(TIMECounter>maxTIME)STOPFlag=true;
-	
+	current_time++;//计时器
   if (htim == &htim2)
   {
-		//I.双PD转向环
-		uint16_t mux_value;//加权偏差
+		TIMECounter++;
+	  if(TIMECounter>maxTIME)STOPFlag=true;
+		//I.转向环PID
+		//加权偏差663
+		uint16_t mux_value;
     MUX_get_value(&mux_value);
-		Dir_measureVal=computeMUXVal(&mux_value);
-    
+		Dir_measureVal=Kalman_Update(&encoderROT,computeMUXVal(&mux_value));
+		
+			
+		ComputePID(&ROT,Dir_measureVal);  //转向PID  正往左
+		ANG.targetVal = ROT.output;//角速度调整
+		
+		//II.角速度环PID
 		dodo_BMI270_get_data();  
 		gyro_z = BMI270_gyro_transition(BMI270_gyro_z);
-		if(abs(gyro_z)>150)ANGCounter++;else ANGCounter=0;  //自旋
+		if(fabs(gyro_z)>warnANG)ANGCounter++;else ANGCounter=0;  //自旋
 		if(ANGCounter>maxANG)STOPFlag=true;
 		
-		ComputePID_DualPD(&ROT,Dir_measureVal,gyro_z);  //转向环PID
-		/*
-		if (ROT.output > 60.0f) ROT.output = 60.0f;//轮速度限幅
-    if (ROT.output < -60.0f) ROT.output = -60.0f;*/
+		//ANG_measureVal = Kalman_Update(&encoderSpeedANG,gyro_z);
+		ComputePID(&ANG,gyro_z);  //角速度PID
+		if (ANG.output > 2000.0f) ANG.output = 2000.0f;//角速度限幅
+    if (ANG.output < -2000.0f) ANG.output = -2000.0f;
 		/*
 		// 弯道检测和速度调整
     int16_t curve_detection = abs(Dir_measureVal);
@@ -201,12 +419,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     } else if(curve_detection > 100) {
         adaptive_speed = defultSpeed * 0.7;  // 中弯 - 适度降速
     }*/
-		L.targetVal = defultSpeed-ROT.output;  //轮速度调整
-		R.targetVal = defultSpeed+ROT.output;
+		L.targetVal = defultSpeed * speed_factor - ANG.output;  //轮速度调整
+		R.targetVal = defultSpeed * speed_factor + ANG.output;
 		if(L.targetVal>maxSpeed)L.targetVal=maxSpeed;else if(L.targetVal<-maxSpeed)L.targetVal=-maxSpeed;//轮速度限幅
 		if(R.targetVal>maxSpeed)R.targetVal=maxSpeed;else if(R.targetVal<-maxSpeed)R.targetVal=-maxSpeed;
 		
-		//II.速度环PID
+		//III.速度环PID
     L_measureVal = -(int16_t)__HAL_TIM_GET_COUNTER(&htim4);//获取左右轮速度
 		R_measureVal = -(int16_t)__HAL_TIM_GET_COUNTER(&htim3);
 	  __HAL_TIM_SET_COUNTER(&htim3, 0);
@@ -214,8 +432,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		L_measureVal= (int16_t)(Kalman_Update(&encoderSpeedL,L_measureVal));//卡尔曼滤波
 		R_measureVal= (int16_t)(Kalman_Update(&encoderSpeedR,R_measureVal));
 		
-		if(UARTCounter%10==0){                             ////////////
-      printf("%d,%d\r\n", L.targetVal,L_measureVal);  //串口输出//
+		if(UARTCounter%timeUART==0){                             ////////////
+      //printf(" %s,0\r\n", current_);                 //串口输出//
 			UARTCounter=1;                                  //        //
 		}UARTCounter++;                                   ////////////
 		
@@ -256,7 +474,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   * @retval int
   */
 int main(void)
- {
+{
+
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
@@ -287,8 +506,8 @@ int main(void)
   MX_USART3_UART_Init();
   MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
-	
-	HAL_Delay(2000);
+
+	HAL_Delay(3500);
 	
 	dodo_BMI270_init();//初始化陀螺仪
 	HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
@@ -296,12 +515,11 @@ int main(void)
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
   HAL_TIM_Base_Start_IT(&htim2);
+	initQueue(&qenterSAW);
 	
 	Kalman_Init(&encoderSpeedL, 0.03f, 2.0f, 0.0f);//卡尔曼初始化
 	Kalman_Init(&encoderSpeedR, 0.03f, 2.0f, 0.0f);
-	Kalman_Init(&encoderSpeedANG, 0.01f, 0.5f, 0.0f);
-	Kalman_Init(&encoderOutputPWML, 0.05f, 2.0f, 0.0f);
-	Kalman_Init(&encoderOutputPWMR, 0.05f, 2.0f, 0.0f);
+	Kalman_Init(&encoderROT, 0.5f, 100.0f, 0.0f);
 
 	//L.targetVal=150;
 	//R.targetVal=150;
@@ -311,7 +529,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-		/*
+    /*
 		L.targetVal=160;
 		R.targetVal=160;
 		HAL_Delay(4500);
@@ -345,7 +563,7 @@ int main(void)
     }
     printf("\n");*/
     /* USER CODE END WHILE */
-    
+
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -392,7 +610,7 @@ void SystemClock_Config(void)
 
 /**
   * @brief SPI1 Initialization Function
-  * @param None 
+  * @param None
   * @retval None
   */
 static void MX_SPI1_Init(void)
@@ -714,6 +932,9 @@ static void MX_DMA_Init(void)
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+
+  /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -778,11 +999,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
-
-
 
 /* USER CODE END 4 */
 
@@ -800,8 +1022,7 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
-
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
