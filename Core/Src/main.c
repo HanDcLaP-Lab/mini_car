@@ -5,10 +5,8 @@
   * @brief          : Main program body
   ******************************************************************************
   * mini_car_race
-  * v2.0
-  * 速度80脉冲/2ms
-	* 运行平稳
-	* 直角转弯半径较大
+  * v2.2
+  * 速度100脉冲/2ms
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -118,7 +116,7 @@ float Kp, Ki, Kd; //
 };
 struct PIDController L={.Kp=25,.Ki=0.3,.Kd=0.05,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};
 struct PIDController R={.Kp=27.5,.Ki=0.3,.Kd=0.05,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};   //PID调参
-struct PIDController ROT={.Kp=4,.Ki=0.015,.Kd=2,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //转向
+struct PIDController ROT={.Kp=4.5,.Ki=0.025,.Kd=2,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //转向
 struct PIDController ANG={.Kp=0.4,.Ki=0.005,.Kd=0,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //角速度
 
 void ComputePID(struct PIDController *pid, int16_t measuredVal) {
@@ -138,10 +136,11 @@ pid->output = pid->Kp * pid->currentError + pid->Ki * pid->integral + pid->Kd * 
 }
 //-----------------------中断回调---------------------
 int16_t L_measureVal,R_measureVal,ANG_measureVal,Dir_measureVal,pwm=0;
-int16_t MUX_Weight[12]={-800,-230,-25,-13,-6,-4,4,6,13,25,230,800};
-int8_t UARTCounter=0;
-#define defultSpeed 80
+int16_t MUX_Weight[12]={-900,-290,-25,-13,-6,-4,4,6,13,25,290,900};
+int16_t UARTCounter=0,LEDCounter=0,DEVcounter=0;
+int16_t defultSpeed=100;
 #define maxSpeed 300
+#define maxDEV 200
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim == &htim2)
@@ -150,11 +149,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		uint16_t mux_value,maxL=5,maxR=6;//加权偏差
 		Dir_measureVal=0;  
     MUX_get_value(&mux_value);
+		LEDCounter=0;
     for(int i=0;i<=11;i++){
       Dir_measureVal+=MUX_Weight[i]*MUX_GET_CHANNEL(mux_value,i);  //灯偏右，车偏左，为正
-			
+			LEDCounter+=MUX_GET_CHANNEL(mux_value,i);
     }
-		
+		if(LEDCounter==0)DEVcounter++;else DEVcounter=0;
+			
 		ComputePID(&ROT,Dir_measureVal);  //转向PID  正往左
 		ANG.targetVal = ROT.output;//角速度调整
 		
@@ -186,6 +187,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		
    	//pwm = Kalman_Update(&encoderOutputPWML,L.output);  //输出电机CCR 左
 		pwm=L.output;
+		if(DEVcounter>maxDEV)pwm=0;
     if (pwm > 3600) pwm = 3600; else if (pwm < -3600) pwm = -3600;  //输出限幅
 	  if (pwm >= 0) {
       TIM1->CCR1 = pwm, HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_RESET);
@@ -195,6 +197,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		
 		//pwm = Kalman_Update(&encoderOutputPWMR,R.output);  //输出电机CCR 右
 		pwm = R.output;
+		if(DEVcounter>maxDEV)pwm=0;
     if (pwm > 3600) pwm = 3600; else if (pwm < -3600) pwm = -3600;  //输出限幅
 	  if (pwm >= 0) {
       TIM1->CCR2 = pwm, HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_SET);
