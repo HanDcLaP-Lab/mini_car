@@ -5,9 +5,9 @@
   * @brief          : Main program body
   ******************************************************************************
   * mini_car_race
-  * v4.0.1
+  * v4.1.1
   * 速度60脉冲/1ms
-	* 未完成
+	* 双PD 未完成
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -116,16 +116,18 @@ float integral; // 积分
 float output; // 输出
 float Kp, Ki, Kd; // 
 };
-struct PIDController L={.Kp=60,.Ki=0.8,.Kd=0.12,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};
-struct PIDController R={.Kp=65,.Ki=0.8,.Kd=0.12,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};   //PID调参
-struct PIDController ROT={.Kp=4.5,.Ki=0.033,.Kd=4.8,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //转向
-struct PIDController ANG={.Kp=0.3,.Ki=0,.Kd=0.055,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //角速度
-
+struct PIDController_DualPD {
+int16_t targetVal; // 目标
+float currentError; // 当前误差
+float preError; // 先前误差
+float derivative; // 微分
+float output; // 输出
+float Kp, Kp2, Kd,gKd; // 
+};
 void ComputePID(struct PIDController *pid, int16_t measuredVal) {
 pid->preError = pid->currentError;   //误差更新
 pid->currentError = pid->targetVal - measuredVal;  
-float rawDeriv = (pid->currentError - pid->preError);
-pid->derivative = 0.7f * pid->derivative + 0.3f * rawDeriv;  //微分更新
+pid->derivative = pid->currentError - pid->preError;  //微分更新
 pid->integral += pid->currentError;  //积分更新
 
 if (pid->integral > integralLimit) {    //积分越界
@@ -137,16 +139,38 @@ pid->integral = -integralLimit;
 pid->output = pid->Kp * pid->currentError + pid->Ki * pid->integral + pid->Kd * pid->derivative; //pid输出
 
 }
+
+void ComputePID_DualPD(struct PIDController_DualPD *pid, float measuredVal,int16_t measuredVal_gyro){
+	pid->preError = pid->currentError;   //误差更新
+  pid->currentError = pid->targetVal - measuredVal;  
+	pid->derivative = pid->currentError - pid->preError;
+	pid->output=pid->Kp * pid->currentError + pid->Kp2 * pid->currentError * fabs(pid->currentError) + pid->Kd * pid->derivative + pid->gKd * measuredVal_gyro;
+}
+struct PIDController L={.Kp=50,.Ki=0.6,.Kd=0.1,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};
+struct PIDController R={.Kp=55,.Ki=0.6,.Kd=0.1,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};   //PID调参
+struct PIDController_DualPD ROT={.Kp=1.7,.Kp2=0.015,.Kd=0,.gKd=-0.6,.targetVal=0,.currentError=0,.preError=0,.derivative=0}; 
+
 //-----------------------中断回调---------------------
 int16_t L_measureVal,R_measureVal,ANG_measureVal,Dir_measureVal,pwm=0;
-int16_t MUX_Weight[12]={-900,-290,-25,-13,-6,-4,4,6,13,25,290,900};
-int16_t UARTCounter=0,LEDCounter=0,DEVCounter=0,TIMECounter=0;
+float MUX_Weight[12]={-110,-55,-14,-7,-3,-1,1,3,7,14,55,110};
+int16_t UARTCounter=0,DEVCounter=0,TIMECounter=0,ANGCounter=0;
 int16_t last_pwm_L=0,last_pwm_R=0;
 bool STOPFlag=false;
-#define maxSpeed 120
+#define maxSpeed 180
 #define maxDEV 500
 #define maxTIME 12000
-#define defultSpeed 60
+#define maxANG 1000
+#define defultSpeed 0
+float computeMUXVal(uint16_t *mux_value){
+  int16_t LEDCounter=0,temp=0;
+	for(int i=0;i<=11;i++){
+      temp+=MUX_Weight[i]*MUX_GET_CHANNEL(*mux_value,i);  //灯偏右，车偏左，为正/ 
+			LEDCounter+=MUX_GET_CHANNEL(*mux_value,i);
+    }
+		if(LEDCounter==0)DEVCounter++;else DEVCounter=0; //出线
+		if(DEVCounter>maxDEV)STOPFlag=true;
+		return temp/LEDCounter;
+}
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
 	TIMECounter++;
@@ -154,29 +178,21 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	
   if (htim == &htim2)
   {
-		//I.转向环PID
-		uint16_t mux_value,maxL=5,maxR=6;//加权偏差
-		Dir_measureVal=0;  
+		//I.双PD转向环
+		uint16_t mux_value;//加权偏差
     MUX_get_value(&mux_value);
-		LEDCounter=0;
-    for(int i=0;i<=11;i++){
-      Dir_measureVal+=MUX_Weight[i]*MUX_GET_CHANNEL(mux_value,i);  //灯偏右，车偏左，为正
-			LEDCounter+=MUX_GET_CHANNEL(mux_value,i);
-    }
-		if(LEDCounter==0)DEVCounter++;else DEVCounter=0;
-		if(DEVCounter>maxDEV)STOPFlag=true;
-			
-		ComputePID(&ROT,Dir_measureVal);  //转向PID  正往左
-		ANG.targetVal = ROT.output;//角速度调整
-		
-		//II.角速度环PID
+		Dir_measureVal=computeMUXVal(&mux_value);
+    
 		dodo_BMI270_get_data();  
 		gyro_z = BMI270_gyro_transition(BMI270_gyro_z);
-		//ANG_measureVal = Kalman_Update(&encoderSpeedANG,gyro_z);
-		ComputePID(&ANG,gyro_z);  //角速度PID
-		if (ANG.output > 2000.0f) ANG.output = 2000.0f;//角速度限幅
-    if (ANG.output < -2000.0f) ANG.output = -2000.0f;
+		if(abs(gyro_z)>150)ANGCounter++;else ANGCounter=0;  //自旋
+		if(ANGCounter>maxANG)STOPFlag=true;
 		
+		ComputePID_DualPD(&ROT,Dir_measureVal,gyro_z);  //转向环PID
+		/*
+		if (ROT.output > 60.0f) ROT.output = 60.0f;//轮速度限幅
+    if (ROT.output < -60.0f) ROT.output = -60.0f;*/
+		/*
 		// 弯道检测和速度调整
     int16_t curve_detection = abs(Dir_measureVal);
     int16_t adaptive_speed = defultSpeed;  // 根据偏差大小调整速度
@@ -184,13 +200,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         adaptive_speed = defultSpeed * 0.4;  // 急弯 - 大幅降速
     } else if(curve_detection > 100) {
         adaptive_speed = defultSpeed * 0.7;  // 中弯 - 适度降速
-    }
-		L.targetVal = defultSpeed-ANG.output;  //轮速度调整
-		R.targetVal = defultSpeed+ANG.output;
+    }*/
+		L.targetVal = defultSpeed-ROT.output;  //轮速度调整
+		R.targetVal = defultSpeed+ROT.output;
 		if(L.targetVal>maxSpeed)L.targetVal=maxSpeed;else if(L.targetVal<-maxSpeed)L.targetVal=-maxSpeed;//轮速度限幅
 		if(R.targetVal>maxSpeed)R.targetVal=maxSpeed;else if(R.targetVal<-maxSpeed)R.targetVal=-maxSpeed;
 		
-		//III.速度环PID
+		//II.速度环PID
     L_measureVal = -(int16_t)__HAL_TIM_GET_COUNTER(&htim4);//获取左右轮速度
 		R_measureVal = -(int16_t)__HAL_TIM_GET_COUNTER(&htim3);
 	  __HAL_TIM_SET_COUNTER(&htim3, 0);
