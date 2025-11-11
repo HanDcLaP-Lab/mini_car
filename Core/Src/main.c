@@ -180,12 +180,12 @@ pid->output = pid->Kp * pid->currentError + pid->Ki * pid->integral + pid->Kd * 
 }
 float gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z;//陀螺仪数据
 struct PIDController L={.Kp=50,.Ki=0.6,.Kd=0.1,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};
-struct PIDController R={.Kp=55,.Ki=0.6,.Kd=0.1,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};   //PID调参
+struct PIDController R={.Kp=50,.Ki=0.6,.Kd=0.1,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};   //PID调参
 struct PIDController ROT={.Kp=1.43,.Ki=0,.Kd=3.8,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //转向
 struct PIDController ANG={.Kp=0.2,.Ki=0,.Kd=0.02,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //角速度
 
 int16_t L_measureVal,R_measureVal,ANG_measureVal,Dir_measureVal,pwm=0;
-int16_t MUX_Weight[12]={590,-290,-25,-13,-6,-4,4,6,13,25,290,590};
+int16_t MUX_Weight[12]={230,-170,-25,-13,-6,-4,4,6,13,25,170,230};
 int16_t UARTCounter=0,DEVCounter=0,TIMECounter=0,ANGCounter=0;
 uint16_t current_time=0;
 int16_t last_pwm_L=0,last_pwm_R=0;
@@ -199,12 +199,12 @@ Queue qenterSAW;
 #define warnANG 150        //[stop]角速度预警，大于此速度开始计时
 #define maxANG 1000        //[stop]空转限，角速度连续此时间大于预警值，将停止
 #define sharpROT 800       //[sharp]“急弯”态的MUXVal输出
-#define enterSAWcount 2         //[saw]可以判定“锯齿”态的1s内连续大幅偏移数
+#define enterSAWcount 2    //[saw]可以判定“锯齿”态的1s内连续大幅偏移数
 #define enterSAWtime 400
-#define timeRECOVERING 500  //[recovering]“恢复”态时长，用于直角弯检测消抖
+#define timeRECOVERING 700  //[recovering]“恢复”态时长，用于直角弯检测消抖
 #define timeUART 20        //[uart]每次UART发送间隔的中断数
-#define minsharpFactor 0.02
-#define dersharpFactor 0.0035 
+#define minsharpFactor 0.04
+#define dersharpFactor 0.0037
 typedef enum {
     STRAIGHT,    //0
     GENTLE_CURVE,//1 
@@ -218,7 +218,6 @@ typedef enum {
 
 STATE current_state = STRAIGHT;
 STATE last_state = STRAIGHT;int16_t LEDCounter = 0;
-uint16_t sawENTERCounter=0;//static
 float sharp_factor=1.0;
 uint16_t recCounter = 0;
 float computeMUXVal(uint16_t *mux_value) {
@@ -257,6 +256,7 @@ float computeMUXVal(uint16_t *mux_value) {
 	}
 	if(current_state == SAWTOOTH && getSize(&qenterSAW) < enterSAWcount)current_state =STRAIGHT;
 	if(getSize(&qenterSAW) >= enterSAWcount)current_state = SAWTOOTH;
+	if(getSize(&qenterSAW) == 0)sawENTERlastside = 0;
 	
 	uint16_t qfront=0;
 	if(getFront(&qenterSAW,&qfront)){ //删除关注时间以外的极点
@@ -281,7 +281,7 @@ float computeMUXVal(uint16_t *mux_value) {
   }
 	
 	  // 状态判断
-  if(current_state != RECOVERING && LEDCounter != 0 && current_state != SAWTOOTH){
+  if(LEDCounter != 0 && current_state != SAWTOOTH && current_state != RECOVERING){
 		if(LEDCounter == 12)current_state = STRAIGHT;//道路交叉
 		else
     if(abs(LCounter-RCounter) <= 3 && LEDCounter <= 4 && Lmost != 0 && Rmost != 11) {
@@ -309,7 +309,7 @@ float computeMUXVal(uint16_t *mux_value) {
   // RECOVERING状态计时
   if(current_state == RECOVERING) {
     recCounter++;
-    if(recCounter >= timeRECOVERING) { // 恢复timeRECOVERING秒后回到正常状态
+		if(recCounter >= timeRECOVERING) { // 恢复timeRECOVERING秒后回到正常状态
       current_state = STRAIGHT;
     }
 	}
@@ -322,39 +322,40 @@ float computeMUXVal(uint16_t *mux_value) {
   switch(current_state) {
     case STRAIGHT:
       result = base_error; // 正常响应
-			speed_factor = 1.2;
+			speed_factor = 1.3;
       break;
 
     case GENTLE_CURVE:
-      result = base_error * 1.7f; // 适度增强
-	    speed_factor = 1.0;
+      result = base_error * 2.5f; // 适度增强
+	    speed_factor = 1.2;
       break;
 
     case SHARP_TURN:
       result = SHARPlastside == 1 ? -sharpROT : sharpROT;
-			speed_factor = 0.05;
+			speed_factor = 0.85;
       break;
     case OUTLINE_SHARP:
 			result = SHARPlastside == 1 ? -sharpROT * sharp_factor: sharpROT * sharp_factor;
 		  if(sharp_factor > minsharpFactor)sharp_factor = sharp_factor - dersharpFactor;
-		  speed_factor = 0.05; 
+		  speed_factor = 0.85; 
 		  break;
 		case OUTLINE_DEFAULT:
 			result = last_reliable_error;
 		  if(result > 500)result = 500;
 		  else if(result <-500)result = -500;
-		  speed_factor = 0.85;
+		  speed_factor = 1.0;
 		  break;
     case EDGE:
+			/*
       for(int i = 0; i <= 11; i++) {
         result += MUX_GET_CHANNEL(*mux_value, i) * MUX_Weight[i];//传统方法
-      }
-			result *=0.8;
+      }*/
+			result = base_error * 2.03f;
 		  speed_factor = 1.0;
       break;        
 
     case RECOVERING:
-      result = base_error * 0.7f;
+      result = base_error * 0.6f;
 		  speed_factor = 1.0;
       break;
 

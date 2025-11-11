@@ -33,4 +33,6 @@ micro_smartcar/main.o: ..\Core\Src\main.c ..\Core\Inc\main.h \
   ..\Core\code\bmi270.h ..\Core\code\bmi2.h ..\Core\code\bmi2_defs.h \
   D:\Program\ Files\Keil_v5\ARM\ARMCLANG\Bin\..\include\stdio.h \
   ..\Core\code\multiplexer.h \
-  D:\Program\ Files\Keil_v5\ARM\ARMCLANG\Bin\..\include\math.h
+  D:\Program\ Files\Keil_v5\ARM\ARMCLANG\Bin\..\include\math.h \
+  D:\Program\ Files\Keil_v5\ARM\ARMCLANG\Bin\..\include\stdbool.h \
+  D:\Program\ Files\Keil_v5\ARM\ARMCLANG\Bin\..\include\stdlib.h
