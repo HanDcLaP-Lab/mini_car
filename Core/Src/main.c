@@ -5,8 +5,9 @@
   * @brief          : Main program body
   ******************************************************************************
   * mini_car_race
-  * v3.0
-  * 速度50脉冲/1ms
+  * v4.0.1
+  * 速度60脉冲/1ms
+	* 未完成
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -19,6 +20,7 @@
 #include "multiplexer.h"//多路复用器驱动，用于读取光电管读数
 #include "stdio.h"
 #include "math.h"
+#include "stdbool.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -107,22 +109,23 @@ float Kalman_Update(KalmanFilter1 *kf, float measurement) {
 #define integralLimit 20000
 struct PIDController {
 int16_t targetVal; // 目标
-int16_t currentError; // 当前误差
-int16_t preError; // 先前误差
-int16_t derivative; // 微分
-int32_t integral; // 积分
-int16_t output; // 输出
+float currentError; // 当前误差
+float preError; // 先前误差
+float derivative; // 微分
+float integral; // 积分
+float output; // 输出
 float Kp, Ki, Kd; // 
 };
-struct PIDController L={.Kp=50,.Ki=0.6,.Kd=0.1,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};
-struct PIDController R={.Kp=55,.Ki=0.6,.Kd=0.1,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};   //PID调参
-struct PIDController ROT={.Kp=5.5,.Ki=0.029,.Kd=2,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //转向
-struct PIDController ANG={.Kp=0.2,.Ki=0,.Kd=0.02,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //角速度
+struct PIDController L={.Kp=60,.Ki=0.8,.Kd=0.12,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};
+struct PIDController R={.Kp=65,.Ki=0.8,.Kd=0.12,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};   //PID调参
+struct PIDController ROT={.Kp=4.5,.Ki=0.033,.Kd=4.8,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //转向
+struct PIDController ANG={.Kp=0.3,.Ki=0,.Kd=0.055,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //角速度
 
 void ComputePID(struct PIDController *pid, int16_t measuredVal) {
 pid->preError = pid->currentError;   //误差更新
 pid->currentError = pid->targetVal - measuredVal;  
-pid->derivative = pid->currentError - pid->preError;  //微分更新
+float rawDeriv = (pid->currentError - pid->preError);
+pid->derivative = 0.7f * pid->derivative + 0.3f * rawDeriv;  //微分更新
 pid->integral += pid->currentError;  //积分更新
 
 if (pid->integral > integralLimit) {    //积分越界
@@ -137,12 +140,18 @@ pid->output = pid->Kp * pid->currentError + pid->Ki * pid->integral + pid->Kd * 
 //-----------------------中断回调---------------------
 int16_t L_measureVal,R_measureVal,ANG_measureVal,Dir_measureVal,pwm=0;
 int16_t MUX_Weight[12]={-900,-290,-25,-13,-6,-4,4,6,13,25,290,900};
-int16_t UARTCounter=0,LEDCounter=0,DEVcounter=0;
-int16_t defultSpeed=50;
+int16_t UARTCounter=0,LEDCounter=0,DEVCounter=0,TIMECounter=0;
+int16_t last_pwm_L=0,last_pwm_R=0;
+bool STOPFlag=false;
 #define maxSpeed 120
-#define maxDEV 200
+#define maxDEV 500
+#define maxTIME 12000
+#define defultSpeed 60
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
+	TIMECounter++;
+	if(TIMECounter>maxTIME)STOPFlag=true;
+	
   if (htim == &htim2)
   {
 		//I.转向环PID
@@ -154,7 +163,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       Dir_measureVal+=MUX_Weight[i]*MUX_GET_CHANNEL(mux_value,i);  //灯偏右，车偏左，为正
 			LEDCounter+=MUX_GET_CHANNEL(mux_value,i);
     }
-		if(LEDCounter==0)DEVcounter++;else DEVcounter=0;
+		if(LEDCounter==0)DEVCounter++;else DEVCounter=0;
+		if(DEVCounter>maxDEV)STOPFlag=true;
 			
 		ComputePID(&ROT,Dir_measureVal);  //转向PID  正往左
 		ANG.targetVal = ROT.output;//角速度调整
@@ -164,6 +174,17 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		gyro_z = BMI270_gyro_transition(BMI270_gyro_z);
 		//ANG_measureVal = Kalman_Update(&encoderSpeedANG,gyro_z);
 		ComputePID(&ANG,gyro_z);  //角速度PID
+		if (ANG.output > 2000.0f) ANG.output = 2000.0f;//角速度限幅
+    if (ANG.output < -2000.0f) ANG.output = -2000.0f;
+		
+		// 弯道检测和速度调整
+    int16_t curve_detection = abs(Dir_measureVal);
+    int16_t adaptive_speed = defultSpeed;  // 根据偏差大小调整速度
+    if(curve_detection > 200) {
+        adaptive_speed = defultSpeed * 0.4;  // 急弯 - 大幅降速
+    } else if(curve_detection > 100) {
+        adaptive_speed = defultSpeed * 0.7;  // 中弯 - 适度降速
+    }
 		L.targetVal = defultSpeed-ANG.output;  //轮速度调整
 		R.targetVal = defultSpeed+ANG.output;
 		if(L.targetVal>maxSpeed)L.targetVal=maxSpeed;else if(L.targetVal<-maxSpeed)L.targetVal=-maxSpeed;//轮速度限幅
@@ -177,7 +198,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		L_measureVal= (int16_t)(Kalman_Update(&encoderSpeedL,L_measureVal));//卡尔曼滤波
 		R_measureVal= (int16_t)(Kalman_Update(&encoderSpeedR,R_measureVal));
 		
-		if(UARTCounter%3==0){                             ////////////
+		if(UARTCounter%10==0){                             ////////////
       printf("%d,%d\r\n", L.targetVal,L_measureVal);  //串口输出//
 			UARTCounter=1;                                  //        //
 		}UARTCounter++;                                   ////////////
@@ -187,7 +208,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		
    	//pwm = Kalman_Update(&encoderOutputPWML,L.output);  //输出电机CCR 左
 		pwm=L.output;
-		if(DEVcounter>maxDEV)pwm=0;
+		if(STOPFlag)pwm=0;
+		if(pwm-last_pwm_L>100)pwm=last_pwm_L+100;//变化率限幅
+		if(pwm-last_pwm_L<-100)pwm=last_pwm_L-100;
+		last_pwm_L=pwm;
     if (pwm > 3600) pwm = 3600; else if (pwm < -3600) pwm = -3600;  //输出限幅
 	  if (pwm >= 0) {
       TIM1->CCR1 = pwm, HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_RESET);
@@ -197,7 +221,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		
 		//pwm = Kalman_Update(&encoderOutputPWMR,R.output);  //输出电机CCR 右
 		pwm = R.output;
-		if(DEVcounter>maxDEV)pwm=0;
+		if(STOPFlag)pwm=0;
+		if(pwm-last_pwm_R>100)pwm=last_pwm_R+100;//变化率限幅
+		if(pwm-last_pwm_R<-100)pwm=last_pwm_R-100;
+		last_pwm_R=pwm;
     if (pwm > 3600) pwm = 3600; else if (pwm < -3600) pwm = -3600;  //输出限幅
 	  if (pwm >= 0) {
       TIM1->CCR2 = pwm, HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_SET);
@@ -254,8 +281,8 @@ int main(void)
 	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
   HAL_TIM_Base_Start_IT(&htim2);
 	
-	Kalman_Init(&encoderSpeedL, 0.01f, 2.0f, 0.0f);//卡尔曼初始化
-	Kalman_Init(&encoderSpeedR, 0.01f, 2.0f, 0.0f);
+	Kalman_Init(&encoderSpeedL, 0.03f, 2.0f, 0.0f);//卡尔曼初始化
+	Kalman_Init(&encoderSpeedR, 0.03f, 2.0f, 0.0f);
 	Kalman_Init(&encoderSpeedANG, 0.01f, 0.5f, 0.0f);
 	Kalman_Init(&encoderOutputPWML, 0.05f, 2.0f, 0.0f);
 	Kalman_Init(&encoderOutputPWMR, 0.05f, 2.0f, 0.0f);
