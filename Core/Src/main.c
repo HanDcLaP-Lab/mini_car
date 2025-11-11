@@ -5,8 +5,8 @@
   * @brief          : Main program body
   ******************************************************************************
   * mini_car_race
-  * v2.2
-  * 速度100脉冲/2ms
+  * v3.0
+  * 速度50脉冲/1ms
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -114,10 +114,10 @@ int32_t integral; // 积分
 int16_t output; // 输出
 float Kp, Ki, Kd; // 
 };
-struct PIDController L={.Kp=25,.Ki=0.3,.Kd=0.05,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};
-struct PIDController R={.Kp=27.5,.Ki=0.3,.Kd=0.05,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};   //PID调参
-struct PIDController ROT={.Kp=4.5,.Ki=0.025,.Kd=2,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //转向
-struct PIDController ANG={.Kp=0.4,.Ki=0.005,.Kd=0,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //角速度
+struct PIDController L={.Kp=50,.Ki=0.6,.Kd=0.1,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};
+struct PIDController R={.Kp=55,.Ki=0.6,.Kd=0.1,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};   //PID调参
+struct PIDController ROT={.Kp=5.5,.Ki=0.029,.Kd=2,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //转向
+struct PIDController ANG={.Kp=0.2,.Ki=0,.Kd=0.02,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //角速度
 
 void ComputePID(struct PIDController *pid, int16_t measuredVal) {
 pid->preError = pid->currentError;   //误差更新
@@ -138,8 +138,8 @@ pid->output = pid->Kp * pid->currentError + pid->Ki * pid->integral + pid->Kd * 
 int16_t L_measureVal,R_measureVal,ANG_measureVal,Dir_measureVal,pwm=0;
 int16_t MUX_Weight[12]={-900,-290,-25,-13,-6,-4,4,6,13,25,290,900};
 int16_t UARTCounter=0,LEDCounter=0,DEVcounter=0;
-int16_t defultSpeed=100;
-#define maxSpeed 300
+int16_t defultSpeed=50;
+#define maxSpeed 120
 #define maxDEV 200
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
@@ -246,7 +246,6 @@ int main(void)
   /* USER CODE BEGIN 2 */
 	
 	HAL_Delay(2000);
-	TIM2->ARR=1999;
 	
 	dodo_BMI270_init();//初始化陀螺仪
 	HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
