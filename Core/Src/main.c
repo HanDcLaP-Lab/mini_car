@@ -199,12 +199,12 @@ Queue qenterSAW;
 #define warnANG 150        //[stop]角速度预警，大于此速度开始计时
 #define maxANG 1000        //[stop]空转限，角速度连续此时间大于预警值，将停止
 #define sharpROT 800       //[sharp]“急弯”态的MUXVal输出
-#define enterSAWcount 2    //[saw]可以判定“锯齿”态的1s内连续大幅偏移数
+#define enterSAWcount 50    //[saw]可以判定“锯齿”态的1s内连续大幅偏移数
 #define enterSAWtime 400
-#define timeRECOVERING 700  //[recovering]“恢复”态时长，用于直角弯检测消抖
+#define timeRECOVERING 200  //[recovering]“恢复”态时长，用于直角弯检测消抖
 #define timeUART 20        //[uart]每次UART发送间隔的中断数
 #define minsharpFactor 0.04
-#define dersharpFactor 0.0037
+#define dersharpFactor 0.00
 typedef enum {
     STRAIGHT,    //0
     GENTLE_CURVE,//1 
@@ -222,7 +222,7 @@ float sharp_factor=1.0;
 uint16_t recCounter = 0;
 float computeMUXVal(uint16_t *mux_value) {
 	static uint8_t sawENTERlastside=0; //0无1左2右
-	static uint8_t SHARPlastside=0;
+	static int16_t SHARPlastside=0;
   static float last_reliable_error = 0;
 	
 	float centroid=0;
@@ -281,16 +281,15 @@ float computeMUXVal(uint16_t *mux_value) {
   }
 	
 	  // 状态判断
-  if(LEDCounter != 0 && current_state != SAWTOOTH && current_state != RECOVERING){
-		if(LEDCounter == 12)current_state = STRAIGHT;//道路交叉
-		else
+  if(LEDCounter != 0 && current_state != SAWTOOTH){
     if(abs(LCounter-RCounter) <= 3 && LEDCounter <= 4 && Lmost != 0 && Rmost != 11) {
       current_state = STRAIGHT;
-    } else if(((LCounter >= 6 && Lmost == 0 && Rmost != 11) ||  
-               (RCounter >= 6 && Rmost == 11 && Lmost != 0) )
+    } else if(((LCounter >= 4 && Lmost == 0 && Rmost != 11) ||  
+               (RCounter >= 4 && Rmost == 11 && Lmost != 0) )
                && LEDCounter >=6		) {
       current_state = SHARP_TURN;
-			SHARPlastside = LCounter > RCounter ? 1:2;
+			if(last_state != SHARP_TURN) SHARPlastside = 0;
+			SHARPlastside += LCounter > RCounter ? -1:1;
     } else if(LEDCounter >= 3) {
       current_state = GENTLE_CURVE;
     } else if(LEDCounter >= 1) { 
@@ -299,18 +298,25 @@ float computeMUXVal(uint16_t *mux_value) {
       current_state = STRAIGHT; 
     }
   }
+	if(LEDCounter == 12){
+	  current_state = STRAIGHT;//道路交叉
+		SHARPlastside = 0;
+	}
 		
   //状态恢复检测：从急弯转出至RECOVERING
   if((last_state == SHARP_TURN  && current_state != SHARP_TURN && current_state != OUTLINE_SHARP && current_state != OUTLINE_DEFAULT) 
-		|| last_state == OUTLINE_SHARP && current_state != OUTLINE_SHARP && current_state != OUTLINE_DEFAULT) {
+		|| (last_state == OUTLINE_SHARP && current_state != OUTLINE_SHARP && current_state != OUTLINE_DEFAULT)) {
     current_state = RECOVERING;
     recCounter = 0;
   }
   // RECOVERING状态计时
-  if(current_state == RECOVERING) {
+  if(last_state == RECOVERING) {
     recCounter++;
+		if(current_state == SHARP_TURN)SHARPlastside = 0;
+		if(current_state != SHARP_TURN && current_state != OUTLINE_DEFAULT && current_state != OUTLINE_SHARP)current_state = RECOVERING;
 		if(recCounter >= timeRECOVERING) { // 恢复timeRECOVERING秒后回到正常状态
       current_state = STRAIGHT;
+			SHARPlastside = 0;
     }
 	}
 	
@@ -318,26 +324,27 @@ float computeMUXVal(uint16_t *mux_value) {
 	
   //输出计算	
   float result = 0;
+	static float result_output=0;
   float base_error = (centroid - 5.5) * 50; // 基础偏差 [-275, 275]
   switch(current_state) {
     case STRAIGHT:
       result = base_error; // 正常响应
-			speed_factor = 1.3;
+			speed_factor = 1.0;
       break;
 
     case GENTLE_CURVE:
-      result = base_error * 2.5f; // 适度增强
-	    speed_factor = 1.2;
+      result = base_error * 2.3f; // 适度增强
+	    speed_factor = 1.0;
       break;
 
     case SHARP_TURN:
-      result = SHARPlastside == 1 ? -sharpROT : sharpROT;
-			speed_factor = 0.85;
+      result = SHARPlastside < 0 ? -sharpROT : sharpROT;
+			speed_factor = -0.07;
       break;
     case OUTLINE_SHARP:
-			result = SHARPlastside == 1 ? -sharpROT * sharp_factor: sharpROT * sharp_factor;
+			result = SHARPlastside < 0 ? -sharpROT * sharp_factor: sharpROT * sharp_factor;
 		  if(sharp_factor > minsharpFactor)sharp_factor = sharp_factor - dersharpFactor;
-		  speed_factor = 0.85; 
+		  speed_factor = -0.07; 
 		  break;
 		case OUTLINE_DEFAULT:
 			result = last_reliable_error;
@@ -350,12 +357,12 @@ float computeMUXVal(uint16_t *mux_value) {
       for(int i = 0; i <= 11; i++) {
         result += MUX_GET_CHANNEL(*mux_value, i) * MUX_Weight[i];//传统方法
       }*/
-			result = base_error * 2.03f;
+			result = base_error * 2.0f;
 		  speed_factor = 1.0;
       break;        
 
     case RECOVERING:
-      result = base_error * 0.6f;
+      result = base_error * 0.7f;
 		  speed_factor = 1.0;
       break;
 
@@ -366,7 +373,7 @@ float computeMUXVal(uint16_t *mux_value) {
         for(int i = 0; i <= 11; i++) {
           result += MUX_GET_CHANNEL(*mux_value, i) * MUX_Weight[i];传统方法
         }*/
-			result = base_error * 1.3
+			result = base_error * 2.3
 			;
 				else result = last_reliable_error * 1.4;
       speed_factor = 1.0;
@@ -378,8 +385,15 @@ float computeMUXVal(uint16_t *mux_value) {
     last_reliable_error = result;
   }
 	  if(UARTCounter%timeUART==0){                                                                    ////////////
-    printf(" %d %d %.2f\r\n", current_state,getSize(&qenterSAW),result);}                           ////////////
-		
+      /*
+		  for(int i = 0; i <= 11; i++) {
+		    printf("%d",MUX_GET_CHANNEL(*mux_value,i));
+      }*/
+			printf(" %d %d %.2f\r\n", current_state,SHARPlastside,result_output/timeUART);
+			result_output = 0;
+		}else{                           ////////////
+		  result_output+=result;
+		}
   return result;
 }
 
