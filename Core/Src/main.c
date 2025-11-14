@@ -184,11 +184,10 @@ struct PIDController R={.Kp=50,.Ki=0.6,.Kd=0.1,.targetVal=0,.currentError=0,.pre
 struct PIDController ROT={.Kp=1.43,.Ki=0,.Kd=3.8,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //转向
 struct PIDController ANG={.Kp=0.2,.Ki=0,.Kd=0.02,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //角速度
 
-int16_t L_measureVal,R_measureVal,ANG_measureVal,Dir_measureVal,pwm=0;
+//-------------------偏差计算-------------------------
 int16_t MUX_Weight[12]={230,-170,-25,-13,-6,-4,4,6,13,25,170,230};
-int16_t UARTCounter=0,DEVCounter=0,TIMECounter=0,ANGCounter=0;
+int16_t UARTCounter=0,OUTCounter=0,ANGCounter=0;
 uint16_t current_time=0;
-int16_t last_pwm_L=0,last_pwm_R=0;
 float speed_factor = 1.0;
 bool STOPFlag=false,TURNFlag = false;
 Queue qenterSAW;
@@ -198,20 +197,20 @@ Queue qenterSAW;
 #define maxTIME 12000      //[stop]此时间后停车
 #define warnANG 150        //[stop]角速度预警，大于此速度开始计时
 #define maxANG 1000        //[stop]空转限，角速度连续此时间大于预警值，将停止
-#define sharpROT 800       //[sharp]“急弯”态的MUXVal输出
-#define enterSAWcount 50    //[saw]可以判定“锯齿”态的1s内连续大幅偏移数
-#define enterSAWtime 400
-#define timeRECOVERING 200  //[recovering]“恢复”态时长，用于直角弯检测消抖
+#define sharpROT 800       //[sharp]“急弯”态的默认MUXVal输出
+#define minsharpFactor 0.04//[sharp]“急弯”态的最小输出乘数
+#define dersharpFactor 0.00//[sharp]“急弯”态每ms的输出减少的比重 [用置零的方式暂时停用]
+#define enterSAWcount 50   //[saw]可以判定“锯齿”态的1s内连续大幅偏移数 [合理值为2或3，用极大数的方式暂时停用]
+#define enterSAWtime 400   //[saw]“锯齿”跟踪的时间长度
+#define timeRECOVERING 200 //[recovering]“恢复”态时长，用于直角弯检测消抖
 #define timeUART 20        //[uart]每次UART发送间隔的中断数
-#define minsharpFactor 0.04
-#define dersharpFactor 0.00
 typedef enum {
     STRAIGHT,    //0
     GENTLE_CURVE,//1 
     SHARP_TURN,  //2
     EDGE,        //3
     RECOVERING,  //4
-    SAWTOOTH,    //5
+    SAWTOOTH,    //5  //暂时停用
 	  OUTLINE_DEFAULT,//6
 	  OUTLINE_SHARP//7
 } STATE;
@@ -225,13 +224,11 @@ float computeMUXVal(uint16_t *mux_value) {
 	static int16_t SHARPlastside=0;
   static float last_reliable_error = 0;
 	
+	// 读取传感器并统计
 	float centroid=0;
-	
   LEDCounter = 0;
-  
   int8_t LCounter = 0, RCounter = 0;
   int8_t Lmost = 12, Rmost = -1;
-  // 读取传感器并统计
   for(int i = 0; i <= 11; i++) {
     if(MUX_GET_CHANNEL(*mux_value, i)) {
       if(i < 6) LCounter++; else RCounter++;
@@ -243,7 +240,7 @@ float computeMUXVal(uint16_t *mux_value) {
   }
 	if(LEDCounter > 0) centroid/=LEDCounter;    
   
-	//SAWTOOTH进入退出
+	//  SAWTOOTH(锯齿、左右震荡)进入退出
 	if((Lmost == 0 || Rmost == 11)){
 	  if(LCounter > RCounter && (sawENTERlastside == 2 || sawENTERlastside == 0)){
 		  if(!enqueue(&qenterSAW,current_time))STOPFlag = true;
@@ -254,7 +251,7 @@ float computeMUXVal(uint16_t *mux_value) {
 			sawENTERlastside = 2;
 		}
 	}
-	if(current_state == SAWTOOTH && getSize(&qenterSAW) < enterSAWcount)current_state =STRAIGHT;
+	if(current_state == SAWTOOTH && getSize(&qenterSAW) < enterSAWcount)current_state = STRAIGHT;
 	if(getSize(&qenterSAW) >= enterSAWcount)current_state = SAWTOOTH;
 	if(getSize(&qenterSAW) == 0)sawENTERlastside = 0;
 	
@@ -266,10 +263,10 @@ float computeMUXVal(uint16_t *mux_value) {
 	
 		//出线判断
 	if(LEDCounter == 0) {
-    DEVCounter++;
-    if(DEVCounter > maxDEV) STOPFlag = true;
+    OUTCounter++;
+    if(OUTCounter > maxDEV) STOPFlag = true;
 		if(current_state != SAWTOOTH && current_state != OUTLINE_SHARP && current_state != OUTLINE_DEFAULT){
-			if(last_state == SHARP_TURN || last_state == RECOVERING) {
+			if(last_state == SHARP_TURN || last_state == RECOVERING) { //SHARP出界和SHARP消抖出界
 			  current_state = OUTLINE_SHARP;
 				sharp_factor = 1.0;
 			}
@@ -277,19 +274,19 @@ float computeMUXVal(uint16_t *mux_value) {
 		  
 		}
   } else {
-    DEVCounter = 0;
+    OUTCounter = 0; //非出界状态时，出界计数器计0
   }
 	
 	  // 状态判断
-  if(LEDCounter != 0 && current_state != SAWTOOTH){
+  if(LEDCounter != 0 && current_state != SAWTOOTH){ //有灯亮、非锯齿时进入判定
     if(abs(LCounter-RCounter) <= 3 && LEDCounter <= 4 && Lmost != 0 && Rmost != 11) {
       current_state = STRAIGHT;
     } else if(((LCounter >= 4 && Lmost == 0 && Rmost != 11) ||  
                (RCounter >= 4 && Rmost == 11 && Lmost != 0) )
                && LEDCounter >=6		) {
       current_state = SHARP_TURN;
-			if(last_state != SHARP_TURN) SHARPlastside = 0;
-			SHARPlastside += LCounter > RCounter ? -1:1;
+			if(last_state != SHARP_TURN) SHARPlastside = 0;//新的急转，转向计数置零
+			SHARPlastside += LCounter > RCounter ? -1:1;//转向计数（消抖处理，防止出界最后时刻的情况不可靠）
     } else if(LEDCounter >= 3) {
       current_state = GENTLE_CURVE;
     } else if(LEDCounter >= 1) { 
@@ -312,11 +309,10 @@ float computeMUXVal(uint16_t *mux_value) {
   // RECOVERING状态计时
   if(last_state == RECOVERING) {
     recCounter++;
-		if(current_state == SHARP_TURN)SHARPlastside = 0;
-		if(current_state != SHARP_TURN && current_state != OUTLINE_DEFAULT && current_state != OUTLINE_SHARP)current_state = RECOVERING;
+		if(current_state != SHARP_TURN && current_state != OUTLINE_DEFAULT && current_state != OUTLINE_SHARP)current_state = RECOVERING; //恢复状态除新的急转和出界外维持恢复
 		if(recCounter >= timeRECOVERING) { // 恢复timeRECOVERING秒后回到正常状态
       current_state = STRAIGHT;
-			SHARPlastside = 0;
+			SHARPlastside = 0; //恢复结束，转向计数置零
     }
 	}
 	
@@ -324,7 +320,7 @@ float computeMUXVal(uint16_t *mux_value) {
 	
   //输出计算	
   float result = 0;
-	static float result_output=0;
+	
   float base_error = (centroid - 5.5) * 50; // 基础偏差 [-275, 275]
   switch(current_state) {
     case STRAIGHT:
@@ -343,7 +339,7 @@ float computeMUXVal(uint16_t *mux_value) {
       break;
     case OUTLINE_SHARP:
 			result = SHARPlastside < 0 ? -sharpROT * sharp_factor: sharpROT * sharp_factor;
-		  if(sharp_factor > minsharpFactor)sharp_factor = sharp_factor - dersharpFactor;
+		if(sharp_factor > minsharpFactor)sharp_factor = sharp_factor - dersharpFactor; //急转的转向半径随时间增大，每ms减少dersharoFactor，最小值minsharpFactor.当前der置零停用
 		  speed_factor = -0.07; 
 		  break;
 		case OUTLINE_DEFAULT:
@@ -373,8 +369,7 @@ float computeMUXVal(uint16_t *mux_value) {
         for(int i = 0; i <= 11; i++) {
           result += MUX_GET_CHANNEL(*mux_value, i) * MUX_Weight[i];传统方法
         }*/
-			result = base_error * 2.3
-			;
+			result = base_error * 2.3f;
 				else result = last_reliable_error * 1.4;
       speed_factor = 1.0;
       break;
@@ -384,27 +379,27 @@ float computeMUXVal(uint16_t *mux_value) {
   if(LEDCounter > 0) {
     last_reliable_error = result;
   }
-	  if(UARTCounter%timeUART==0){                                                                    ////////////
-      /*
-		  for(int i = 0; i <= 11; i++) {
-		    printf("%d",MUX_GET_CHANNEL(*mux_value,i));
-      }*/
-			printf(" %d %d %.2f\r\n", current_state,SHARPlastside,result_output/timeUART);
-			result_output = 0;
-		}else{                           ////////////
-		  result_output+=result;
-		}
+	
+	//UART输出
+	static float result_output=0;
+	if(UARTCounter%timeUART==0){                                                                    ////////////
+	  printf(" %d %d %.2f\r\n", current_state,SHARPlastside,result_output/timeUART);
+		result_output = 0;
+	}else{                                                                                          ////////////
+		 result_output+=result;
+	}
   return result;
 }
 
 //-----------------------中断回调---------------------
+int16_t L_measureVal,R_measureVal,ANG_measureVal,Dir_measureVal,pwm=0;
+int16_t last_pwm_L=0,last_pwm_R=0;
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-	current_time++;//计时器
   if (htim == &htim2)
   {
-		TIMECounter++;
-	  if(TIMECounter>maxTIME)STOPFlag=true;
+		current_time++;
+	  if(current_time>maxTIME)STOPFlag=true;
 		//I.转向环PID
 		//加权偏差663
 		uint16_t mux_value;
@@ -418,6 +413,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		//II.角速度环PID
 		dodo_BMI270_get_data();  
 		gyro_z = BMI270_gyro_transition(BMI270_gyro_z);
+		
 		if(fabs(gyro_z)>warnANG)ANGCounter++;else ANGCounter=0;  //自旋
 		if(ANGCounter>maxANG)STOPFlag=true;
 		
@@ -425,15 +421,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		ComputePID(&ANG,gyro_z);  //角速度PID
 		if (ANG.output > 2000.0f) ANG.output = 2000.0f;//角速度限幅
     if (ANG.output < -2000.0f) ANG.output = -2000.0f;
-		/*
-		// 弯道检测和速度调整
-    int16_t curve_detection = abs(Dir_measureVal);
-    int16_t adaptive_speed = defultSpeed;  // 根据偏差大小调整速度
-    if(curve_detection > 200) {
-        adaptive_speed = defultSpeed * 0.4;  // 急弯 - 大幅降速
-    } else if(curve_detection > 100) {
-        adaptive_speed = defultSpeed * 0.7;  // 中弯 - 适度降速
-    }*/
 		L.targetVal = defultSpeed * speed_factor - ANG.output;  //轮速度调整
 		R.targetVal = defultSpeed * speed_factor + ANG.output;
 		if(L.targetVal>maxSpeed)L.targetVal=maxSpeed;else if(L.targetVal<-maxSpeed)L.targetVal=-maxSpeed;//轮速度限幅
@@ -447,7 +434,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		L_measureVal= (int16_t)(Kalman_Update(&encoderSpeedL,L_measureVal));//卡尔曼滤波
 		R_measureVal= (int16_t)(Kalman_Update(&encoderSpeedR,R_measureVal));
 		
-		if(UARTCounter%timeUART==0){                             ////////////
+		if(UARTCounter%timeUART==0){                       ////////////
       //printf(" %s,0\r\n", current_);                 //串口输出//
 			UARTCounter=1;                                  //        //
 		}UARTCounter++;                                   ////////////
@@ -455,7 +442,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     ComputePID(&R, R_measureVal);  //速度PID
 		ComputePID(&L, L_measureVal);
 		
-   	//pwm = Kalman_Update(&encoderOutputPWML,L.output);  //输出电机CCR 左
 		pwm=L.output;
 		if(STOPFlag)pwm=0;
 		if(pwm-last_pwm_L>100)pwm=last_pwm_L+100;//变化率限幅
@@ -468,7 +454,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       TIM1->CCR1 = -pwm, HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_SET);
     }
 		
-		//pwm = Kalman_Update(&encoderOutputPWMR,R.output);  //输出电机CCR 右
 		pwm = R.output;
 		if(STOPFlag)pwm=0;
 		if(pwm-last_pwm_R>100)pwm=last_pwm_R+100;//变化率限幅
