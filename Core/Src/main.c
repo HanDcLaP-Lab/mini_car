@@ -5,9 +5,9 @@
   * @brief          : Main program body
   ******************************************************************************
   * mini_car_race
-  * v4.2.4
+  * v4.2.8
 	* 速度60脉冲/1ms
-	* 状态判断
+	* 状态判断 双PD
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -162,48 +162,63 @@ float integral; // 积分
 float output; // 输出
 float Kp, Ki, Kd; // 
 };
+struct PIDController_DualPD {
+int16_t targetVal; // 目标
+float currentError; // 当前误差
+float preError; // 先前误差
+float derivative; // 微分
+float output; // 输出
+float Kp, Kp2, Kd,gKd; // 
+};
 
 void ComputePID(struct PIDController *pid, int16_t measuredVal) {
-pid->preError = pid->currentError;   //误差更新
-pid->currentError = pid->targetVal - measuredVal;  
-pid->derivative = pid->currentError - pid->preError;  //微分更新
-pid->integral += pid->currentError;  //积分更新
+  pid->preError = pid->currentError;   //误差更新
+  pid->currentError = pid->targetVal - measuredVal;  
+  pid->derivative = pid->currentError - pid->preError;  //微分更新
+  pid->integral += pid->currentError;  //积分更新
 
-if (pid->integral > integralLimit) {    //积分越界
-pid->integral = integralLimit;
-} else if (pid->integral < -integralLimit) {
-pid->integral = -integralLimit;
+  if (pid->integral > integralLimit) {    //积分越界
+    pid->integral = integralLimit;
+  } else if (pid->integral < -integralLimit) {
+    pid->integral = -integralLimit;
+  }
+
+  pid->output = pid->Kp * pid->currentError + pid->Ki * pid->integral + pid->Kd * pid->derivative; //pid输出
 }
-
-pid->output = pid->Kp * pid->currentError + pid->Ki * pid->integral + pid->Kd * pid->derivative; //pid输出
-
+void ComputePID_DualPD(struct PIDController_DualPD *pid, float measuredVal,int16_t measuredVal_gyro){
+	pid->preError = pid->currentError;   //误差更新
+  pid->currentError = pid->targetVal - measuredVal;  
+	pid->derivative = pid->currentError - pid->preError;
+	pid->output=pid->Kp * pid->currentError + pid->Kp2 * pid->currentError * fabs(pid->currentError) + pid->Kd * pid->derivative + pid->gKd * measuredVal_gyro;
 }
 float gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z;//陀螺仪数据
 struct PIDController L={.Kp=50,.Ki=0.6,.Kd=0.1,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};
 struct PIDController R={.Kp=50,.Ki=0.6,.Kd=0.1,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};   //PID调参
-struct PIDController ROT={.Kp=1.43,.Ki=0,.Kd=3.8,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //转向
-struct PIDController ANG={.Kp=0.2,.Ki=0,.Kd=0.02,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};  //角速度
+struct PIDController_DualPD ROT={.Kp=0.1,.Kp2=0.00013,.Kd=0,.gKd=-0.1,.targetVal=0,.currentError=0,.preError=0,.derivative=0}; 
 
 //-------------------偏差计算-------------------------
 int16_t MUX_Weight[12]={230,-170,-25,-13,-6,-4,4,6,13,25,170,230};
-int16_t UARTCounter=0,OUTCounter=0,ANGCounter=0;
+int16_t UARTCounter=0,OUTCounter=0,ANGCounter=0,CIRCLECounter=0,CIRCLEoutCounter=0;
 uint16_t current_time=0;
+uint8_t circleArrow=3;
 float speed_factor = 1.0;
-bool STOPFlag=false,TURNFlag = false;
+bool STOPFlag=false,TURNFlag = false,CIRCLEFlag = false,circleDirFlag[4]={1,0,0,1};//0选左1选右
 Queue qenterSAW;
-#define defultSpeed 60     //[speed]默认速度
-#define maxSpeed 160       //[speed]最大速度
+#define defultSpeed 70     //[speed]默认速度
+#define maxSpeed 180       //[speed]最大速度
 #define maxDEV 750         //[stop]最大偏出赛道的时间
 #define maxTIME 12000      //[stop]此时间后停车
 #define warnANG 150        //[stop]角速度预警，大于此速度开始计时
 #define maxANG 1000        //[stop]空转限，角速度连续此时间大于预警值，将停止
-#define sharpROT 800       //[sharp]“急弯”态的默认MUXVal输出
+#define sharpROT 500       //[sharp]“急弯”态的默认MUXVal输出
 #define minsharpFactor 0.04//[sharp]“急弯”态的最小输出乘数
 #define dersharpFactor 0.00//[sharp]“急弯”态每ms的输出减少的比重 [用置零的方式暂时停用]
 #define enterSAWcount 50   //[saw]可以判定“锯齿”态的1s内连续大幅偏移数 [合理值为2或3，用极大数的方式暂时停用]
 #define enterSAWtime 400   //[saw]“锯齿”跟踪的时间长度
 #define timeRECOVERING 200 //[recovering]“恢复”态时长，用于直角弯检测消抖
 #define timeUART 20        //[uart]每次UART发送间隔的中断数
+#define enterCIRCLEcount 5
+#define outCIRCLEcount 50
 typedef enum {
     STRAIGHT,    //0
     GENTLE_CURVE,//1 
@@ -219,25 +234,65 @@ STATE current_state = STRAIGHT;
 STATE last_state = STRAIGHT;int16_t LEDCounter = 0;
 float sharp_factor=1.0;
 uint16_t recCounter = 0;
-float computeMUXVal(uint16_t *mux_value) {
+
+float computeMUXVal(uint16_t mux_value) {
 	static uint8_t sawENTERlastside=0; //0无1左2右
 	static int16_t SHARPlastside=0;
   static float last_reliable_error = 0;
 	
 	// 读取传感器并统计
-	float centroid=0;
+	float centroid=0,centroidL=0,centroidR=0;
   LEDCounter = 0;
-  int8_t LCounter = 0, RCounter = 0;
+  int8_t LCounter = 0, RCounter = 0, GapCounter = 0;
   int8_t Lmost = 12, Rmost = -1;
+	bool GapFlag=false,LFlag=true;
+	bool MUX[12]={0};
+	for(int i = 0; i <= 11; i++) {
+		MUX[i]=MUX_GET_CHANNEL(mux_value, i);
+	}
   for(int i = 0; i <= 11; i++) {
-    if(MUX_GET_CHANNEL(*mux_value, i)) {
+    if(MUX[i]) {
       if(i < 6) LCounter++; else RCounter++;
       if(i < Lmost) Lmost = i;
       if(i > Rmost) Rmost = i;
-      LEDCounter++;
 		  centroid += i;
-    }
+			LEDCounter++;
+			centroidL += LFlag;
+			centroidR += !LFlag; 
+		}
+			if(i>=1 && GapCounter == 0){
+				if(MUX[i-1] == 1 && MUX[i] == 0){
+				  LFlag = !LFlag;
+				  GapFlag = true;
+					
+		  }}
+			if(GapFlag && MUX[i] == 0) GapCounter++;
+			if(GapFlag && MUX[i] == 1) GapFlag = false; //GapFlag反映是否可计数
+			//if(UARTCounter%timeUART==0)printf("%d %d",GapCounter,GapFlag);
   }
+	if(GapCounter != 0)
+		GapFlag = !GapFlag; //GapFlag现反映是否存在gap
+	if(GapFlag){
+	  CIRCLECounter++;
+		if(CIRCLECounter == enterCIRCLEcount){
+		  CIRCLEFlag = true;
+			circleArrow++;
+			if(circleArrow>=4)circleArrow = 0;
+		}
+	}else{
+		CIRCLECounter = 0;
+	}
+	if(CIRCLEFlag){
+	  centroid = centroidL * !circleDirFlag[circleArrow] + centroidR * circleDirFlag[circleArrow]; //centroid更新（其他值未改，可能影响状态判断）
+		if(!GapFlag){
+		  CIRCLEoutCounter++;
+			if(CIRCLEoutCounter >=outCIRCLEcount){
+				CIRCLEFlag = false; 
+			}
+		}else CIRCLEoutCounter = 0;
+	}
+	if(UARTCounter%timeUART==0)printf("%d %d %d %d",GapFlag,CIRCLEFlag,circleArrow,GapCounter);
+	
 	if(LEDCounter > 0) centroid/=LEDCounter;    
   
 	//  SAWTOOTH(锯齿、左右震荡)进入退出
@@ -312,7 +367,7 @@ float computeMUXVal(uint16_t *mux_value) {
 		if(current_state != SHARP_TURN && current_state != OUTLINE_DEFAULT && current_state != OUTLINE_SHARP)current_state = RECOVERING; //恢复状态除新的急转和出界外维持恢复
 		if(recCounter >= timeRECOVERING) { // 恢复timeRECOVERING秒后回到正常状态
       current_state = STRAIGHT;
-			SHARPlastside = 0; //恢复结束，转向计数置零
+			//SHARPlastside = 0; //恢复结束，转向计数置零
     }
 	}
 	
@@ -329,18 +384,18 @@ float computeMUXVal(uint16_t *mux_value) {
       break;
 
     case GENTLE_CURVE:
-      result = base_error * 2.3f; // 适度增强
+      result = base_error * 1.5f; // 适度增强
 	    speed_factor = 1.0;
       break;
 
     case SHARP_TURN:
       result = SHARPlastside < 0 ? -sharpROT : sharpROT;
-			speed_factor = -0.07;
+			speed_factor = 0.7;
       break;
     case OUTLINE_SHARP:
 			result = SHARPlastside < 0 ? -sharpROT * sharp_factor: sharpROT * sharp_factor;
 		if(sharp_factor > minsharpFactor)sharp_factor = sharp_factor - dersharpFactor; //急转的转向半径随时间增大，每ms减少dersharoFactor，最小值minsharpFactor.当前der置零停用
-		  speed_factor = -0.07; 
+		  speed_factor = 0.7; 
 		  break;
 		case OUTLINE_DEFAULT:
 			result = last_reliable_error;
@@ -353,12 +408,12 @@ float computeMUXVal(uint16_t *mux_value) {
       for(int i = 0; i <= 11; i++) {
         result += MUX_GET_CHANNEL(*mux_value, i) * MUX_Weight[i];//传统方法
       }*/
-			result = base_error * 2.0f;
+			result = base_error * 1.8f;
 		  speed_factor = 1.0;
       break;        
 
     case RECOVERING:
-      result = base_error * 0.7f;
+      result = base_error * 0.4f;
 		  speed_factor = 1.0;
       break;
 
@@ -383,7 +438,7 @@ float computeMUXVal(uint16_t *mux_value) {
 	//UART输出
 	static float result_output=0;
 	if(UARTCounter%timeUART==0){                                                                    ////////////
-	  printf(" %d %d %.2f\r\n", current_state,SHARPlastside,result_output/timeUART);
+	  //printf(" %d %d %.2f\r\n", current_state,SHARPlastside,result_output/timeUART);
 		result_output = 0;
 	}else{                                                                                          ////////////
 		 result_output+=result;
@@ -400,33 +455,28 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   {
 		current_time++;
 	  if(current_time>maxTIME)STOPFlag=true;
-		//I.转向环PID
-		//加权偏差663
+		
+		//加权偏差
 		uint16_t mux_value;
     MUX_get_value(&mux_value);
-		Dir_measureVal=Kalman_Update(&encoderROT,computeMUXVal(&mux_value));
+		Dir_measureVal=Kalman_Update(&encoderROT,computeMUXVal(mux_value));
 		
-			
-		ComputePID(&ROT,Dir_measureVal);  //转向PID  正往左
-		ANG.targetVal = ROT.output;//角速度调整
-		
-		//II.角速度环PID
 		dodo_BMI270_get_data();  
 		gyro_z = BMI270_gyro_transition(BMI270_gyro_z);
 		
 		if(fabs(gyro_z)>warnANG)ANGCounter++;else ANGCounter=0;  //自旋
 		if(ANGCounter>maxANG)STOPFlag=true;
 		
-		//ANG_measureVal = Kalman_Update(&encoderSpeedANG,gyro_z);
-		ComputePID(&ANG,gyro_z);  //角速度PID
-		if (ANG.output > 2000.0f) ANG.output = 2000.0f;//角速度限幅
-    if (ANG.output < -2000.0f) ANG.output = -2000.0f;
-		L.targetVal = defultSpeed * speed_factor - ANG.output;  //轮速度调整
-		R.targetVal = defultSpeed * speed_factor + ANG.output;
+		//I.转向环PID
+		ComputePID_DualPD(&ROT,Dir_measureVal,gyro_z);  //转向环PID
+		if (ROT.output > 2000.0f) ROT.output = 2000.0f;//角速度限幅
+    if (ROT.output < -2000.0f) ROT.output = -2000.0f;
+		L.targetVal = defultSpeed * speed_factor - ROT.output;  //轮速度调整
+		R.targetVal = defultSpeed * speed_factor + ROT.output;
 		if(L.targetVal>maxSpeed)L.targetVal=maxSpeed;else if(L.targetVal<-maxSpeed)L.targetVal=-maxSpeed;//轮速度限幅
 		if(R.targetVal>maxSpeed)R.targetVal=maxSpeed;else if(R.targetVal<-maxSpeed)R.targetVal=-maxSpeed;
 		
-		//III.速度环PID
+		//II.速度环PID
     L_measureVal = -(int16_t)__HAL_TIM_GET_COUNTER(&htim4);//获取左右轮速度
 		R_measureVal = -(int16_t)__HAL_TIM_GET_COUNTER(&htim3);
 	  __HAL_TIM_SET_COUNTER(&htim3, 0);
@@ -435,7 +485,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		R_measureVal= (int16_t)(Kalman_Update(&encoderSpeedR,R_measureVal));
 		
 		if(UARTCounter%timeUART==0){                       ////////////
-      //printf(" %s,0\r\n", current_);                 //串口输出//
+      printf(" %.2f\r\n", ROT.output);                 //串口输出//
 			UARTCounter=1;                                  //        //
 		}UARTCounter++;                                   ////////////
 		
@@ -541,9 +591,9 @@ int main(void)
 		HAL_Delay(4500);
 		L.targetVal=80;
 		R.targetVal=80;
-		HAL_Delay(4500);*/
+		HAL_Delay(4500);
 		//TIM1->CCR2=1000;HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_SET);
-		/*
+		
     //以下为陀螺仪使用示例
     dodo_BMI270_get_data();//调用此函数会更新陀螺仪数据
     gyro_x=BMI270_gyro_transition(BMI270_gyro_x);//将原始陀螺仪数据转换为物理值，单位为度每秒
@@ -553,8 +603,9 @@ int main(void)
     accel_x=BMI270_acc_transition(BMI270_accel_x);//将原始加速度计数据转换为物理值，单位为g，一般不需要使用此数据
     accel_y=BMI270_acc_transition(BMI270_accel_y);
     accel_z=BMI270_acc_transition(BMI270_accel_z);
-    printf("G: %f %f %f | A: %f %f %f\r\n", gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z);//输出陀螺仪读数，测试是否成功启动，正常使用时不需要这行代码
-
+    printf("A: %f %f %f\r\n", accel_x, accel_y, accel_z);//输出陀螺仪读数，测试是否成功启动，正常使用时不需要这行代码
+		HAL_Delay(400); 
+      
     //以下为读取光电管的示例（从左到右编号0~11）
     uint16_t mux_value;
     MUX_get_value(&mux_value);
