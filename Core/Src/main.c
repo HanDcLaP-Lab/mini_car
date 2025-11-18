@@ -241,14 +241,14 @@ float computeMUXVal(uint16_t mux_value) {
   static float last_reliable_error = 0;
 	
 	// 读取传感器并统计
-	float centroid=0,centroidL=0,centroidR=0;
+	float centroid=0,centroidL=0,centroidR=0; //centroidL记录分隔时偏左的灯带，centroidR记录偏右的
   LEDCounter = 0;
-  int8_t LCounter = 0, RCounter = 0, GapCounter = 0;
+  int8_t LCounter = 0, RCounter = 0, GapCounter = 0; //GapCounter记录第一段灯结束至第二段灯开始的不亮的灯数；或是若没有第二段灯，则记录从第一段灯结束至最后一共不亮的灯
   int8_t Lmost = 12, Rmost = -1;
-	bool GapFlag=false,LFlag=true;
+	bool GapFlag=false,LFlag=true; //GapFlag标记是否可以计数，LFlag标记是否是第一段灯
 	bool MUX[12]={0};
 	for(int i = 0; i <= 11; i++) {
-		MUX[i]=MUX_GET_CHANNEL(mux_value, i);
+		MUX[i]=MUX_GET_CHANNEL(mux_value, i); //读进数组
 	}
   for(int i = 0; i <= 11; i++) {
     if(MUX[i]) {
@@ -257,35 +257,37 @@ float computeMUXVal(uint16_t mux_value) {
       if(i > Rmost) Rmost = i;
 		  centroid += i;
 			LEDCounter++;
-			centroidL += LFlag;
-			centroidR += !LFlag; 
+			centroidL += LFlag; 
+			centroidR += !LFlag;  
 		}
 			if(i>=1 && GapCounter == 0){
-				if(MUX[i-1] == 1 && MUX[i] == 0){
+				if(MUX[i-1] == 1 && MUX[i] == 0){ //上一灯亮，下一灯不亮，且GapCounter无计数（排除第二段灯结束后还有不亮灯的情况），LFlag翻转记录第二段灯，GapFlag标记可以计数
 				  LFlag = !LFlag;
 				  GapFlag = true;
 					
 		  }}
-			if(GapFlag && MUX[i] == 0) GapCounter++;
-			if(GapFlag && MUX[i] == 1) GapFlag = false; //GapFlag反映是否可计数
-			//if(UARTCounter%timeUART==0)printf("%d %d",GapCounter,GapFlag);
+			if(GapFlag && MUX[i] == 0) GapCounter++; //可以计数时，灯不亮，则计数
+			if(GapFlag && MUX[i] == 1) GapFlag = false; //进入下一段灯，不再计数
   }
 	if(GapCounter != 0)
-		GapFlag = !GapFlag; //GapFlag现反映是否存在gap
+		GapFlag = !GapFlag; //GapFlag现反映是否存在gap。 若仅最右侧有一段灯，则GapCounter为0，GapFlag保持0；
+	                                                //若仅中间或左侧有一段灯，GapCounter不为0，GapFlag在之前因没有进入第二段灯而保持为1，此处翻转为0；
+																								  //若存在两段灯，GapFlag因进入第二段灯变为0，此处翻转为1；
 	if(GapFlag){
-	  CIRCLECounter++;
+	  CIRCLECounter++; //进入计数（用于消抖
+		if(CIRCLECounter >= enterCIRCLEcount)CIRCLEFlag = true;
 		if(CIRCLECounter == enterCIRCLEcount){
-		  CIRCLEFlag = true;
-			circleArrow++;
+			circleArrow++;  //下一个状态
 			if(circleArrow>=4)circleArrow = 0;
 		}
 	}else{
-		CIRCLECounter = 0;
+		CIRCLECounter = 0; //GapFlag不稳定，排除掉
 	}
+	
 	if(CIRCLEFlag){
 	  centroid = centroidL * !circleDirFlag[circleArrow] + centroidR * circleDirFlag[circleArrow]; //centroid更新（其他值未改，可能影响状态判断）
 		if(!GapFlag){
-		  CIRCLEoutCounter++;
+		  CIRCLEoutCounter++; //退出计数（用于延长响应
 			if(CIRCLEoutCounter >=outCIRCLEcount){
 				CIRCLEFlag = false; 
 			}
@@ -293,6 +295,7 @@ float computeMUXVal(uint16_t mux_value) {
 	}
 	if(UARTCounter%timeUART==0)printf("%d %d %d %d",GapFlag,CIRCLEFlag,circleArrow,GapCounter);
 	
+	//  状态判断
 	if(LEDCounter > 0) centroid/=LEDCounter;    
   
 	//  SAWTOOTH(锯齿、左右震荡)进入退出
@@ -332,7 +335,7 @@ float computeMUXVal(uint16_t mux_value) {
     OUTCounter = 0; //非出界状态时，出界计数器计0
   }
 	
-	  // 状态判断
+	  // 其他状态判断
   if(LEDCounter != 0 && current_state != SAWTOOTH){ //有灯亮、非锯齿时进入判定
     if(abs(LCounter-RCounter) <= 3 && LEDCounter <= 4 && Lmost != 0 && Rmost != 11) {
       current_state = STRAIGHT;
