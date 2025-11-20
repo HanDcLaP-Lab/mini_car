@@ -201,9 +201,9 @@ void ComputePID_DualPD(struct PIDController_DualPD *pid, float measuredVal,int16
 	pid->output=pid->Kp * pid->currentError + pid->Kp2 * pid->currentError * fabs(pid->currentError) + pid->Kd * pid->derivative + pid->gKd * measuredVal_gyro;
 }
 float gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z;//陀螺仪数据
-struct PIDController L={.Kp=60,.Ki=0.6,.Kd=0.13,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};
-struct PIDController R={.Kp=60,.Ki=0.6,.Kd=0.13,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};   //PID调参
-struct PIDController_DualPD ROT={.Kp=0.103,.Kp2=0.00013,.Kd=0.02,.gKd=-0.062,.targetVal=0,.currentError=0,.preError=0,.derivative=0}; 
+struct PIDController L={.Kp=53,.Ki=0.6,.Kd=0.13,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};
+struct PIDController R={.Kp=53,.Ki=0.6,.Kd=0.13,.targetVal=0,.currentError=0,.preError=0,.derivative=0,.integral=0};   //PID调参
+struct PIDController_DualPD ROT={.Kp=0.097,.Kp2=0.0001,.Kd=0.02,.gKd=-0.072,.targetVal=0,.currentError=0,.preError=0,.derivative=0}; 
 
 //-------------------偏差计算-------------------------
 int16_t MUX_Weight[12]={230,-170,-25,-13,-6,-4,4,6,13,25,170,230};
@@ -213,14 +213,14 @@ float speed_factor = 1.0;
 bool STOPFlag=false,TURNFlag = false;//0选左1选右
 Queue qenterSAW;
 #define defultSpeed 70     //[speed]默认速度
-#define maxSpeed 200       //[speed]最大速度
+#define maxSpeed 220       //[speed]最大速度
 #define maxDEV 750         //[stop]最大偏出赛道的时间
-#define maxTIME 12000      //[stop]此时间后停车
+#define maxTIME 300000      //[stop]此时间后停车
 #define warnANG 150        //[stop]角速度预警，大于此速度开始计时
 #define maxANG 1000        //[stop]空转限，角速度连续此时间大于预警值，将停止
-#define sharpROT 600       //[sharp]“急弯”态的默认MUXVal输出
+#define sharpROT 570       //[sharp]“急弯”态的默认MUXVal输出
 #define minsharpFactor 0.04//[sharp]“急弯”态的最小输出乘数
-#define dersharpFactor 0.00//[sharp]“急弯”态每ms的输出减少的比重 [用置零的方式暂时停用]
+#define dersharpFactor 0.002//[sharp]“急弯”态每ms的输出减少的比重 [用置零的方式暂时停用]
 #define enterSAWcount 50   //[saw]可以判定“锯齿”态的1s内连续大幅偏移数 [合理值为2或3，用极大数的方式暂时停用]
 #define enterSAWtime 400   //[saw]“锯齿”跟踪的时间长度
 #define timeRECOVERING 80 //[recovering]“恢复”态时长，用于直角弯检测消抖
@@ -244,7 +244,7 @@ float sharp_factor=1.0;
 uint16_t recCounter = 0;
 
 struct muxinfo M={.CIRCLECounterin=0,.CIRCLECounterout=0,.CIRCLEFlag=0,.circleArrow=3};
-bool circleDirFlag[4]={1,0,0,1};
+bool circleDirFlag[4]={1,1,0,0};
 void M_Uptate(struct muxinfo *M){
 	
 	// 读取传感器并统计
@@ -412,19 +412,19 @@ float computeMUXVal() {
       break;
 
     case GENTLE_CURVE:
-      result = base_error * 1.8f; // 适度增强
+      result = base_error * 1.6f; // 适度增强
 	    speed_factor = 1.0;
       break;
 
     case SHARP_TURN:
       result = SHARPlastside < 0 ? -sharpROT : sharpROT;
 		  result = SHARPlastside == 0 ? 0 : result;
-			speed_factor = 0.8;
+			speed_factor = 0.4;
       break;
     case OUTLINE_SHARP:
 			result = SHARPlastside < 0 ? -sharpROT: sharpROT;
 		  result = SHARPlastside == 0 ? 0 : result;
-		  speed_factor = 0.8; 
+		  speed_factor = 0.4; 
 		  break;
 		case OUTLINE_DEFAULT:
 			result = last_reliable_error;
@@ -437,7 +437,7 @@ float computeMUXVal() {
       for(int i = 0; i <= 11; i++) {
         result += MUX_GET_CHANNEL(*mux_value, i) * MUX_Weight[i];//传统方法
       }*/
-			result = base_error * 2.3f;
+			result = base_error * 1.8f;
 		  speed_factor = 1.0;
       break;        
 
