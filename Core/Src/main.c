@@ -202,7 +202,7 @@ void ComputePID_DualPD(struct PIDController_DualPD* pid, float measuredVal, int1
 float gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z;  // 陀螺仪数据
 struct PIDController L = {.Kp = 53, .Ki = 0.6, .Kd = 0.13, .targetVal = 0, .currentError = 0, .preError = 0, .derivative = 0, .integral = 0};
 struct PIDController R = {.Kp = 53, .Ki = 0.6, .Kd = 0.13, .targetVal = 0, .currentError = 0, .preError = 0, .derivative = 0, .integral = 0};  // PID调参
-struct PIDController_DualPD ROT = {.Kp = 0.1, .Kp2 = 0.00005, .Kd = 0.02, .gKd = -0.072, .targetVal = 0, .currentError = 0, .preError = 0, .derivative = 0};
+struct PIDController_DualPD ROT = {.Kp = 0.1, .Kp2 = 0.00008, .Kd = 0.02, .gKd = -0.082, .targetVal = 0, .currentError = 0, .preError = 0, .derivative = 0};
 
 //-------------------偏差计算-------------------------
 int16_t MUX_Weight[12] = {230, -170, -25, -13, -6, -4, 4, 6, 13, 25, 170, 230};
@@ -212,21 +212,21 @@ float speed_factor = 1.0;
 float angle = 0;
 bool STOPFlag = false, TURNFlag = false;  // 0选左1选右
 Queue qenterSAW;
-#define defultSpeed 70     //[speed]默认速度
-#define maxSpeed 220       //[speed]最大速度
-#define maxDEV 750         //[stop]最大偏出赛道的时间
-#define maxTIME 36000      //[stop]此时间后停车
-#define warnANG 150        //[stop]角速度预警，大于此速度开始计时
-#define maxANG 1000        //[stop]空转限，角速度连续此时间大于预警值，将停止
-#define sharpROT 570       //[sharp]“急弯”态的默认MUXVal输出
-#define minsharpFactor 0.04//[sharp]“急弯”态的最小输出乘数
-#define dersharpFactor 0.002//[sharp]“急弯”态每ms的输出减少的比重 [用置零的方式暂时停用]
-#define enterSAWcount 50   //[saw]可以判定“锯齿”态的1s内连续大幅偏移数 [合理值为2或3，用极大数的方式暂时停用]
-#define enterSAWtime 400   //[saw]“锯齿”跟踪的时间长度
-#define timeRECOVERING 80 //[recovering]“恢复”态时长，用于直角弯检测消抖
-#define timeUART 150        //[uart]每次UART发送间隔的中断数
-#define enterCIRCLEcount 5 //[circle]进入计数
-#define outCIRCLEcount 5  //[circle]退出计数
+#define defultSpeed 70        //[speed]默认速度
+#define maxSpeed 220          //[speed]最大速度
+#define maxDEV 750            //[stop]最大偏出赛道的时间
+#define maxTIME 36000         //[stop]此时间后停车
+#define warnANG 150           //[stop]角速度预警，大于此速度开始计时
+#define maxANG 1000           //[stop]空转限，角速度连续此时间大于预警值，将停止
+#define sharpROT 570          //[sharp]“急弯”态的默认MUXVal输出
+#define minsharpFactor 0.04   //[sharp]“急弯”态的最小输出乘数
+#define dersharpFactor 0.002  //[sharp]“急弯”态每ms的输出减少的比重 [用置零的方式暂时停用]
+#define enterSAWcount 50      //[saw]可以判定“锯齿”态的1s内连续大幅偏移数 [合理值为2或3，用极大数的方式暂时停用]
+#define enterSAWtime 400      //[saw]“锯齿”跟踪的时间长度
+#define timeRECOVERING 80     //[recovering]“恢复”态时长，用于直角弯检测消抖
+#define timeUART 150          //[uart]每次UART发送间隔的中断数
+#define enterCIRCLEcount 5    //[circle]进入计数
+#define outCIRCLEcount 5      //[circle]退出计数
 typedef enum {
     STRAIGHT,         // 0
     GENTLE_CURVE,     // 1
@@ -244,8 +244,14 @@ float sharp_factor = 1.0;
 uint16_t recCounter = 0;
 
 struct muxinfo M = {.CIRCLECounterin = 0, .CIRCLECounterout = 0, .CIRCLEFlag = 0, .circleArrow = 3};
-bool circleDirFlag[4] = {0, 1, 1, 0};
-bool circletrigger[4] = {0 , 0 , 0 , 0};
+bool circleDirFlag[4] = {1, 0, 0, 1};
+bool circletrigger[4] = {0, 0, 0, 0};
+
+bool angle_effective(int input, int error_max) {
+    int angle_res = ((int)angle - input) % 360000;
+    return(angle_res > 360000 - error_max || angle_res < error_max);
+}
+
 void M_Uptate(struct muxinfo* M) {
     // 读取传感器并统计
     M->centroid = 0;
@@ -282,11 +288,11 @@ void M_Uptate(struct muxinfo* M) {
             cirRCounter += !LFlag;
         }
     }
-    if (!circletrigger[(M->circleArrow + 1 )%4]&& rise_edge_num > 1&& (fabs(angle - 150000) < 30000&& M->circleArrow != 2 || fabs(angle - 480000) < 30000&& M->circleArrow != 0)) {
+    if (!circletrigger[(M->circleArrow + 1) % 4] && rise_edge_num > 1 &&
+        (angle_effective(120000, 30000) && M->circleArrow != 2 || angle_effective(150000, 30000) && M->circleArrow != 0)) {
         M->CIRCLECounterin++;  // 进入计数（用于消抖
         if (M->CIRCLECounterin >= enterCIRCLEcount) M->CIRCLEFlag = true;
         if (M->CIRCLECounterin == enterCIRCLEcount) {
-					  
             M->circleArrow++;  // 下一个状态
             if (M->circleArrow >= 4) M->circleArrow = 0;
         }
@@ -305,7 +311,7 @@ void M_Uptate(struct muxinfo* M) {
             M->CIRCLECounterout++;  // 退出计数（用于延长响应
             if (M->CIRCLECounterout >= outCIRCLEcount) {
                 M->CIRCLEFlag = false;
-							circletrigger[M->circleArrow] = 1;
+                circletrigger[M->circleArrow] = 1;
             }
         } else
             M->CIRCLECounterout = 0;
@@ -377,13 +383,12 @@ float computeMUXVal() {
     if (M.LEDCounter == 12) {
         current_state = STRAIGHT;  // 道路交叉
         SHARPlastside = 0;
-			if( (int)angle%360000 < 30000 || (int)angle%360000 > 330000) {
-				circletrigger[0]  = 0;
-				circletrigger[1]  = 0;
-				circletrigger[2]  = 0;
-				circletrigger[3]  = 0;
-				
-			}
+        if (angle_effective(0 , 30000)) {
+            circletrigger[0] = 0;
+            circletrigger[1] = 0;
+            circletrigger[2] = 0;
+            circletrigger[3] = 0;
+        }
     }
 
     // 状态恢复检测：从急弯转出至RECOVERING
@@ -418,30 +423,32 @@ float computeMUXVal() {
             speed_factor = 1.0;
             break;
 
-    case SHARP_TURN:
-      result = SHARPlastside < 0 ? -sharpROT : sharpROT;
-		  result = SHARPlastside == 0 ? 0 : result;
-			speed_factor = 0.3;
-      break;
-    case OUTLINE_SHARP:
-			result = SHARPlastside < 0 ? -sharpROT: sharpROT;
-		  result = SHARPlastside == 0 ? 0 : result;
-		  speed_factor = 0.3; 
-		  break;
-		case OUTLINE_DEFAULT:
-			result = last_reliable_error;
-		  if(result > 500)result = 500;
-		  else if(result <-500)result = -500;
-		  speed_factor = 1.0;
-		  break;
-    case EDGE:
-			/*
+        case SHARP_TURN:
+            result = SHARPlastside < 0 ? -sharpROT : sharpROT;
+            result = SHARPlastside == 0 ? 0 : result;
+            speed_factor = 0.3;
+            break;
+        case OUTLINE_SHARP:
+            result = SHARPlastside < 0 ? -sharpROT : sharpROT;
+            result = SHARPlastside == 0 ? 0 : result;
+            speed_factor = 0.3;
+            break;
+        case OUTLINE_DEFAULT:
+            result = last_reliable_error;
+            if (result > 500)
+                result = 500;
+            else if (result < -500)
+                result = -500;
+            speed_factor = 1.0;
+            break;
+        case EDGE:
+            /*
       for(int i = 0; i <= 11; i++) {
         result += MUX_GET_CHANNEL(*mux_value, i) * MUX_Weight[i];//传统方法
       }*/
-			result = base_error * 1.8f;
-		  speed_factor = 1.0;
-      break;        
+            result = base_error * 1.8f;
+            speed_factor = 1.0;
+            break;
 
         case RECOVERING:
             result = base_error * 0.8f;
@@ -478,13 +485,11 @@ float computeMUXVal() {
     return result;
 }
 
-
 //-----------------------中断回调---------------------
 int16_t L_measureVal, R_measureVal, ANG_measureVal, Dir_measureVal, pwm = 0;
 int16_t last_pwm_L = 0, last_pwm_R = 0;
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     if (htim == &htim2) {
-			  
         current_time++;
         if (current_time > maxTIME) STOPFlag = true;
 
@@ -494,7 +499,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
 
         dodo_BMI270_get_data();
         gyro_z = BMI270_gyro_transition(BMI270_gyro_z);
-				angle -= gyro_z;
+        angle -= gyro_z;
         if (fabs(gyro_z) > warnANG)
             ANGCounter++;
         else
@@ -524,9 +529,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
         L_measureVal = (int16_t)(Kalman_Update(&encoderSpeedL, L_measureVal));  // 卡尔曼滤波
         R_measureVal = (int16_t)(Kalman_Update(&encoderSpeedR, R_measureVal));
 
-        if (UARTCounter % timeUART == 0) {    ////////////
-            //printf(" %.2f\r\n", ROT.output);  // 串口输出//
-            UARTCounter = 1;                  //        //
+        if (UARTCounter % timeUART == 0) {  ////////////
+            // printf(" %.2f\r\n", ROT.output);  // 串口输出//
+            UARTCounter = 1;  //        //
         }
         UARTCounter++;  ////////////
 
