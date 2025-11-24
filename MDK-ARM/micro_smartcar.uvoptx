@@ -168,37 +168,42 @@
         <Ww>
           <count>2</count>
           <WinNumber>1</WinNumber>
-          <ItemText>R</ItemText>
+          <ItemText>Dir_measureVal,0x0A</ItemText>
         </Ww>
         <Ww>
           <count>3</count>
           <WinNumber>1</WinNumber>
-          <ItemText>Dir_measureVal,0x0A</ItemText>
+          <ItemText>Dir_measureVal</ItemText>
         </Ww>
         <Ww>
           <count>4</count>
           <WinNumber>1</WinNumber>
-          <ItemText>Dir_measureVal</ItemText>
+          <ItemText>L_measureVal,0x0A</ItemText>
         </Ww>
         <Ww>
           <count>5</count>
           <WinNumber>1</WinNumber>
-          <ItemText>L_measureVal,0x0A</ItemText>
+          <ItemText>R_measureVal,0x0A</ItemText>
         </Ww>
         <Ww>
           <count>6</count>
           <WinNumber>1</WinNumber>
-          <ItemText>R_measureVal,0x0A</ItemText>
+          <ItemText>gyro_z</ItemText>
         </Ww>
         <Ww>
           <count>7</count>
           <WinNumber>1</WinNumber>
-          <ItemText>gyro_z</ItemText>
+          <ItemText>current_state</ItemText>
         </Ww>
         <Ww>
           <count>8</count>
           <WinNumber>1</WinNumber>
-          <ItemText>current_state</ItemText>
+          <ItemText>L</ItemText>
+        </Ww>
+        <Ww>
+          <count>9</count>
+          <WinNumber>1</WinNumber>
+          <ItemText>R</ItemText>
         </Ww>
       </WatchWindow1>
       <Tracepoint>
