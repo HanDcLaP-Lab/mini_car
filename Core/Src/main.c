@@ -200,8 +200,8 @@ void ComputePID_DualPD(struct PIDController_DualPD* pid, float measuredVal, int1
     pid->output = pid->Kp * pid->currentError + pid->Kp2 * pid->currentError * fabs(pid->currentError) + pid->Kd * pid->derivative + pid->gKd * measuredVal_gyro;
 }
 float gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z;  // 陀螺仪数据
-struct PIDController L = {.Kp = 53, .Ki = 0.6, .Kd = 0.13, .targetVal = 0, .currentError = 0, .preError = 0, .derivative = 0, .integral = 0};
-struct PIDController R = {.Kp = 53, .Ki = 0.6, .Kd = 0.13, .targetVal = 0, .currentError = 0, .preError = 0, .derivative = 0, .integral = 0};  // PID调参
+struct PIDController L = {.Kp = 63, .Ki = 0.6, .Kd = 0.13, .targetVal = 0, .currentError = 0, .preError = 0, .derivative = 0, .integral = 0};
+struct PIDController R = {.Kp = 63, .Ki = 0.6, .Kd = 0.13, .targetVal = 0, .currentError = 0, .preError = 0, .derivative = 0, .integral = 0};  // PID调参
 struct PIDController_DualPD ROT = {.Kp = 0.1, .Kp2 = 0.00008, .Kd = 0.02, .gKd = -0.082, .targetVal = 0, .currentError = 0, .preError = 0, .derivative = 0};
 
 //-------------------偏差计算-------------------------
@@ -210,23 +210,25 @@ int16_t UARTCounter = 0, OUTCounter = 0, ANGCounter = 0;
 uint16_t current_time = 0;
 float speed_factor = 1.0;
 float angle = 0;
+long int real_distance = 0;
 bool STOPFlag = false, TURNFlag = false;  // 0选左1选右
 Queue qenterSAW;
-#define defultSpeed 70        //[speed]默认速度
+#define defultSpeed 75        //[speed]默认速度
 #define maxSpeed 220          //[speed]最大速度
 #define maxDEV 750            //[stop]最大偏出赛道的时间
-#define maxTIME 36000         //[stop]此时间后停车
+#define maxTIME 33000         //[stop]此时间后停车
 #define warnANG 150           //[stop]角速度预警，大于此速度开始计时
 #define maxANG 1000           //[stop]空转限，角速度连续此时间大于预警值，将停止
-#define sharpROT 570          //[sharp]“急弯”态的默认MUXVal输出
+#define sharpROT 570          //[sharp]“急弯”态的默认MUXVal输出//570
 #define minsharpFactor 0.04   //[sharp]“急弯”态的最小输出乘数
 #define dersharpFactor 0.002  //[sharp]“急弯”态每ms的输出减少的比重 [用置零的方式暂时停用]
 #define enterSAWcount 50      //[saw]可以判定“锯齿”态的1s内连续大幅偏移数 [合理值为2或3，用极大数的方式暂时停用]
 #define enterSAWtime 400      //[saw]“锯齿”跟踪的时间长度
 #define timeRECOVERING 80     //[recovering]“恢复”态时长，用于直角弯检测消抖
-#define timeUART 150          //[uart]每次UART发送间隔的中断数
+#define timeUART 200          //[uart]每次UART发送间隔的中断数
 #define enterCIRCLEcount 5    //[circle]进入计数
-#define outCIRCLEcount 5      //[circle]退出计数
+#define outCIRCLEcount 3      //[circle]退出计数
+#define circle_factor 1.3
 typedef enum {
     STRAIGHT,         // 0
     GENTLE_CURVE,     // 1
@@ -246,10 +248,9 @@ uint16_t recCounter = 0;
 struct muxinfo M = {.CIRCLECounterin = 0, .CIRCLECounterout = 0, .CIRCLEFlag = 0, .circleArrow = 3};
 bool circleDirFlag[4] = {1, 0, 0, 1};
 bool circletrigger[4] = {0, 0, 0, 0};
-
 bool angle_effective(int input, int error_max) {
     int angle_res = ((int)angle - input) % 360000;
-    return(angle_res > 360000 - error_max || angle_res < error_max);
+    return (angle_res > 360000 - error_max || angle_res < error_max);
 }
 
 void M_Uptate(struct muxinfo* M) {
@@ -289,7 +290,7 @@ void M_Uptate(struct muxinfo* M) {
         }
     }
     if (!circletrigger[(M->circleArrow + 1) % 4] && rise_edge_num > 1 &&
-        (angle_effective(120000, 30000) && M->circleArrow != 2 || angle_effective(150000, 30000) && M->circleArrow != 0)) {
+        (angle_effective(120000, 30000) && M->circleArrow != 2 || angle_effective(150000, 30000) && M->circleArrow != 0) && real_distance > 600000) {
         M->CIRCLECounterin++;  // 进入计数（用于消抖
         if (M->CIRCLECounterin >= enterCIRCLEcount) M->CIRCLEFlag = true;
         if (M->CIRCLECounterin == enterCIRCLEcount) {
@@ -383,11 +384,13 @@ float computeMUXVal() {
     if (M.LEDCounter == 12) {
         current_state = STRAIGHT;  // 道路交叉
         SHARPlastside = 0;
-        if (angle_effective(0 , 30000)) {
+        if (angle_effective(0, 30000) && real_distance > 700000) {
             circletrigger[0] = 0;
             circletrigger[1] = 0;
             circletrigger[2] = 0;
             circletrigger[3] = 0;
+            real_distance = 0;
+					M.circleArrow = 3;
         }
     }
 
@@ -408,6 +411,10 @@ float computeMUXVal() {
 
     last_state = current_state;
     if (current_state != SHARP_TURN && current_state != OUTLINE_SHARP && current_state != RECOVERING) SHARPlastside = 0;
+    
+    //
+    if(M.CIRCLEFlag) current_state = SHARP_TURN;
+    //
 
     // 输出计算
     float result = 0;
@@ -426,6 +433,7 @@ float computeMUXVal() {
         case SHARP_TURN:
             result = SHARPlastside < 0 ? -sharpROT : sharpROT;
             result = SHARPlastside == 0 ? 0 : result;
+            if(M.CIRCLEFlag) result *= circle_factor;
             speed_factor = 0.3;
             break;
         case OUTLINE_SHARP:
@@ -477,7 +485,7 @@ float computeMUXVal() {
     // UART输出
     static float result_output = 0;
     if (UARTCounter % timeUART == 0) {  ////////////
-        printf(" %d %.1f %.1f\r\n", M.LEDCounter, M.centroid, result);
+        printf(" %ld , arror:%d\r\n", real_distance, M.circleArrow);
         result_output = 0;
     } else {  ////////////
         result_output += result;
@@ -524,6 +532,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
         // II.速度环PID
         L_measureVal = -(int16_t)__HAL_TIM_GET_COUNTER(&htim4);  // 获取左右轮速度
         R_measureVal = -(int16_t)__HAL_TIM_GET_COUNTER(&htim3);
+        real_distance += (L_measureVal + R_measureVal) / 2;
         __HAL_TIM_SET_COUNTER(&htim3, 0);
         __HAL_TIM_SET_COUNTER(&htim4, 0);
         L_measureVal = (int16_t)(Kalman_Update(&encoderSpeedL, L_measureVal));  // 卡尔曼滤波
@@ -540,13 +549,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
 
         pwm = L.output;
         if (STOPFlag) pwm = 0;
-        if (pwm - last_pwm_L > 100) pwm = last_pwm_L + 100;  // 变化率限幅
-        if (pwm - last_pwm_L < -100) pwm = last_pwm_L - 100;
+        if (pwm - last_pwm_L > 800) pwm = last_pwm_L + 800;  // 变化率限幅
+        if (pwm - last_pwm_L < -800) pwm = last_pwm_L - 800;
         last_pwm_L = pwm;
-        if (pwm > 3600)
-            pwm = 3600;
-        else if (pwm < -3600)
-            pwm = -3600;  // 输出限幅
+        if (pwm > 6000)
+            pwm = 6000;
+        else if (pwm < -6000)
+            pwm = -6000;  // 输出限幅
         if (pwm >= 0) {
             TIM1->CCR1 = pwm, HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_RESET);
         } else {
@@ -555,13 +564,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
 
         pwm = R.output;
         if (STOPFlag) pwm = 0;
-        if (pwm - last_pwm_R > 100) pwm = last_pwm_R + 100;  // 变化率限幅
-        if (pwm - last_pwm_R < -100) pwm = last_pwm_R - 100;
+        if (pwm - last_pwm_R > 800) pwm = last_pwm_R + 800;  // 变化率限幅
+        if (pwm - last_pwm_R < -800) pwm = last_pwm_R - 800;
         last_pwm_R = pwm;
-        if (pwm > 3600)
-            pwm = 3600;
-        else if (pwm < -3600)
-            pwm = -3600;  // 输出限幅
+        if (pwm > 6000)
+            pwm = 6000;
+        else if (pwm < -6000)
+            pwm = -6000;  // 输出限幅
         if (pwm >= 0) {
             TIM1->CCR2 = pwm, HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_SET);
         } else {
