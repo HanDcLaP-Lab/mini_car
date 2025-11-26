@@ -211,14 +211,14 @@ long int real_distance = 0;
 bool STOPFlag = false, TURNFlag = false;  // 0选左1选右
 #define defultSpeed 75        //[speed]默认速度
 #define maxSpeed 350          //[speed]最大速度
-#define maxDEV 750            //[stop]最大偏出赛道的时间
+#define maxDEV 1750            //[stop]最大偏出赛道的时间
 #define maxTIME 33000         //[stop]此时间后停车
 #define warnANG 300           //[stop]角速度预警，大于此速度开始计时
 #define maxANG 3000           //[stop]空转限，角速度连续此时间大于预警值，将停止
-#define sharpROT 570          //[sharp]“急弯”态的默认MUXVal输出//570
+#define sharpROT 660          //[sharp]“急弯”态的默认MUXVal输出//570
 #define minsharpFactor 0.04   //[sharp]“急弯”态的最小输出乘数
 #define dersharpFactor 0.002  //[sharp]“急弯”态每ms的输出减少的比重 [用置零的方式暂时停用]
-#define timeRECOVERING 80     //[recovering]“恢复”态时长，用于直角弯检测消抖
+#define timeRECOVERING 60     //[recovering]“恢复”态时长，用于直角弯检测消抖
 #define timeUART 200          //[uart]每次UART发送间隔的中断数
 #define enterCIRCLEcount 5    //[circle]进入计数
 #define outCIRCLEcount 3      //[circle]退出计数
@@ -322,7 +322,10 @@ float computeMUXVal() {
     // 出线判断
     if (M.LEDCounter == 0) {
         OUTCounter++;
-        if (OUTCounter > maxDEV) STOPFlag = true;
+        if (OUTCounter > maxDEV){
+            STOPFlag = true;
+            printf("STOP for OUTLINE\r\n");
+        }
         if ( current_state != OUTLINE_SHARP && current_state != OUTLINE_DEFAULT) {
             if (last_state == SHARP_TURN || last_state == RECOVERING) {  // SHARP出界和SHARP消抖出界
                 current_state = OUTLINE_SHARP;
@@ -338,9 +341,9 @@ float computeMUXVal() {
     if (M.LEDCounter != 0 ) {  // 有灯亮、非锯齿时进入判定
         if (abs(M.LCounter - M.RCounter) <= 3 && M.LEDCounter <= 4 && M.Lmost != 0 && M.Rmost != 11) {
             current_state = STRAIGHT;
-        } else if (((M.LCounter >= 4 && M.Lmost == 0 && M.Rmost != 11) ||
-                    (M.RCounter >= 4 && M.Rmost == 11 && M.Lmost != 0)) &&
-                   M.LEDCounter >= 5) {
+        } else if (((M.LCounter >= 3 && M.Lmost == 0 && M.Rmost != 11) ||
+                    (M.RCounter >= 3 && M.Rmost == 11 && M.Lmost != 0)) &&
+                   M.LEDCounter >= 4) {
             current_state = SHARP_TURN;
             if (last_state != SHARP_TURN) SHARPlastside = 0;    // 新的急转，转向计数置零
             SHARPlastside += M.LCounter > M.RCounter ? -1 : 1;  // 转向计数（消抖处理，防止出界最后时刻的情况不可靠）
@@ -354,7 +357,6 @@ float computeMUXVal() {
     }
     if (M.LEDCounter == 12) {
         current_state = STRAIGHT;  // 道路交叉
-        SHARPlastside = 0;
         if (angle_effective(0, 30000) && real_distance > 700000) {
             circletrigger[0] = 0;
             circletrigger[1] = 0;
@@ -381,7 +383,8 @@ float computeMUXVal() {
     }
 
     last_state = current_state;
-    if (current_state != SHARP_TURN && current_state != OUTLINE_SHARP && current_state != RECOVERING) SHARPlastside = 0;
+    if (current_state != SHARP_TURN && current_state != OUTLINE_SHARP && current_state != OUTLINE_DEFAULT && current_state != RECOVERING) 
+        SHARPlastside = 0;
     
     //
     if(M.CIRCLEFlag) current_state = GENTLE_CURVE;
@@ -433,7 +436,7 @@ float computeMUXVal() {
     }
 
     // 保存可靠误差值
-    if (M.LEDCounter > 0) {
+    if (M.LEDCounter > 0 && fabs(last_reliable_error) > 100) {
         last_reliable_error = result;
     }
 
@@ -456,7 +459,10 @@ int16_t last_pwm_L = 0, last_pwm_R = 0;
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     if (htim == &htim2) {
         current_time++;
-        if (current_time > maxTIME) STOPFlag = true;
+        if (current_time > maxTIME){
+            STOPFlag = true;
+            printf("STOP for TIME\r\n");
+        }
 
         // 加权偏差
         MUX_get_value(&M.mux_value);
@@ -469,7 +475,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
             ANGCounter++;
         else
             ANGCounter = 0;  // 自旋
-        if (ANGCounter > maxANG) STOPFlag = true;
+        if (ANGCounter > maxANG){
+            STOPFlag = true;
+            printf("STOP for ANG\r\n");
+        }
 
         // I.转向环PID
         ComputePID_DualPD(&ROT, Dir_measureVal, gyro_z);  // 转向环PID
