@@ -71,6 +71,28 @@ static void MX_TIM4_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+int fputc(int ch, FILE* f) {
+    HAL_UART_Transmit(&huart3, (uint8_t*)&ch, 1, 0xffff);
+    return ch;
+}
+
+
+typedef enum {
+    STRAIGHT,         // 0
+    GENTLE_CURVE,     // 1
+    SHARP_TURN,       // 2
+    EDGE,             // 3
+    RECOVERING,       // 4
+    OUTLINE_DEFAULT,  // 5
+    OUTLINE_SHARP     // 6
+} STATE;
+
+STATE current_state = STRAIGHT;
+STATE last_state = STRAIGHT;
+float sharp_factor = 1.0;
+uint16_t recCounter = 0;
+
 //----------------------惯性导航--------------------------------------------------------//
 
 typedef struct {
@@ -88,7 +110,7 @@ int16_t target [15][4] ={
     {0 , 0 , -45 , 120},
     {1 , 0 , 60 , 100},//锯齿1
     {0 , 0 , -180 , 100},
-    {1 , 0 , 30 , 100},//锯齿2
+    {1 , 0 , 36 , 100},//锯齿2
     {0 , 1 , 180 , 100},
     {0 , 0 , -90 , 100},
     {0 , 1 , 180 , 100},
@@ -102,9 +124,9 @@ int16_t target [15][4] ={
 };
 void IN_update(in * obj){
     //正常转向模式
-    if(target[obj->index][0]){
+    if(target[obj->index][0] == 0){
         //达到目标
-        if(fabs(obj->angle) >= fabs(target[obj->index][2] * 1000)) {
+        if(fabs(obj->angle) >= fabs(target[obj->index][2] * 1000.0)) {
             obj->index++;
             obj->angle = 0;
             obj->distance = 0;
@@ -117,8 +139,11 @@ void IN_update(in * obj){
             obj->distance = 0;
         }
         //
-        if(obj->angle > 0) obj->flag = 0;
-        else obj->flag = 1;
+        if(current_state != OUTLINE_DEFAULT&&current_state != OUTLINE_SHARP)
+        {
+            if(obj->angle > 0) obj->flag = 0;
+            else obj->flag = 1;
+        }
 
     }
 }
@@ -211,7 +236,7 @@ uint16_t current_time = 0;
 float speed_factor = 1.0;
 float real_angle = 0;
 long int real_distance = 0;
-bool STOPFlag = false, TURNFlag = false;  // 0选左1选右
+bool STOPFlag = false;  // 0选左1选右
 #define defultSpeed 70        //[speed]默认速度
 #define maxSpeed 350          //[speed]最大速度
 #define maxDEV 750            //[stop]最大偏出赛道的时间
@@ -226,20 +251,7 @@ bool STOPFlag = false, TURNFlag = false;  // 0选左1选右
 #define enterCIRCLEcount 5    //[circle]进入计数
 #define outCIRCLEcount 3      //[circle]退出计数
 #define circle_factor 1.6
-typedef enum {
-    STRAIGHT,         // 0
-    GENTLE_CURVE,     // 1
-    SHARP_TURN,       // 2
-    EDGE,             // 3
-    RECOVERING,       // 4
-    OUTLINE_DEFAULT,  // 5
-    OUTLINE_SHARP     // 6
-} STATE;
 
-STATE current_state = STRAIGHT;
-STATE last_state = STRAIGHT;
-float sharp_factor = 1.0;
-uint16_t recCounter = 0;
 
 struct muxinfo M = {.CIRCLECounterin = 0, .CIRCLECounterout = 0, .CIRCLEFlag = 0, .circleArrow = 3};
 bool circleDirFlag[4] = {1, 0, 0, 1};
@@ -410,12 +422,12 @@ float computeMUXVal() {
             result = SHARPlastside < 0 ? -sharpROT : sharpROT;
             result = SHARPlastside == 0 ? 0 : result;
             
-            speed_factor = 0.3;
+            speed_factor = 0.5;
             break;
         case OUTLINE_SHARP:
             result = IN.flag ? sharpROT : -sharpROT;
             //result = SHARPlastside == 0 ? 0 : result;
-            speed_factor = 0.3;
+            speed_factor = 0.4;
             break;
         case OUTLINE_DEFAULT:
             result = IN.flag ? 400 : -400;
@@ -439,8 +451,8 @@ float computeMUXVal() {
     if(IN.index < target_num) speed_factor *= (target[IN.index][3] / 100.0f);
     UARTCounter++;
     if (UARTCounter % timeUART == 0) {  ////////////
-        printf(" %d , %d\r\n", IN.index , IN.flag);
-        UARTCounter = 0;
+        printf(" %d , %d , angle:%.2f , dis:%ld\r\n", IN.index , IN.flag , IN.angle , IN.distance);
+        //UARTCounter = 0;
     }
         
     // 保存可靠误差值
@@ -457,7 +469,8 @@ int16_t last_pwm_L = 0, last_pwm_R = 0;
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     if (htim == &htim2) {
         current_time++;
-        if(IN.index < target_num) IN_update(&IN);
+        if(IN.index >= target_num) STOPFlag = 1;
+        IN_update(&IN);
         if (current_time > maxTIME) STOPFlag = true;
 
         // 加权偏差
