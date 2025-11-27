@@ -92,7 +92,8 @@ STATE current_state = STRAIGHT;
 STATE last_state = STRAIGHT;
 float sharp_factor = 1.0;
 uint16_t recCounter = 0;
-
+float real_angle = 0;
+#define TOLERANCE 10000
 //----------------------惯性导航--------------------------------------------------------//
 
 typedef struct {
@@ -105,10 +106,11 @@ in IN = {.angle = 0, .distance = 0, .flag = 0, .index = 0};
 int16_t target_num = 15;
 int16_t target [15][4] ={
     //[type(0为正常转向，1为锯齿)][正常转向的默认转向方向，1为右0为左，锯齿为0不启用][正常转向的目标角度(°)，锯齿的默认距离(*0.001)][speed_rate * 100]
-    {0 , 0 , -45 , 100},
-    {0 , 0 , -360 , 100},
     {0 , 0 , -45 , 120},
-    {1 , 0 , 60 , 100},//锯齿1
+
+		{0 , 0 , -360 , 110},
+    {0 , 0 , -45 , 120},
+    {1 , 0 , 55 , 100},//锯齿1
     {0 , 0 , -180 , 100},
     {1 , 0 , 36 , 100},//锯齿2
     {0 , 1 , 180 , 100},
@@ -119,16 +121,18 @@ int16_t target [15][4] ={
     {0 , 0 , -180 , 120},
     {0 , 1 , 135 , 120},
     {0 , 0 , -360 , 100},
-    {0 , 0 , -135 , 120}
+    {0 , 0 , -135 , 120} 
 
 };
 void IN_update(in * obj){
     //正常转向模式
     if(target[obj->index][0] == 0){
         //达到目标
-        if(fabs(obj->angle) >= fabs(target[obj->index][2] * 1000.0)) {
+        if(fabs(obj->angle) >= fabs(target[obj->index][2] * 1000.0) - TOLERANCE && 
+        current_state !=OUTLINE_DEFAULT&&current_state != OUTLINE_SHARP) {
+            
+            obj->angle -= target[obj->index][2] * 1000.0;
             obj->index++;
-            obj->angle = 0;
             obj->distance = 0;
         }
         obj->flag = target[obj->index][1];
@@ -234,7 +238,7 @@ struct PIDController_DualPD ROT = {.Kp = 0.1, .Kp2 = 0.00008, .Kd = 0.02, .gKd =
 int16_t UARTCounter = 0, OUTCounter = 0, ANGCounter = 0;
 uint16_t current_time = 0;
 float speed_factor = 1.0;
-float real_angle = 0;
+
 long int real_distance = 0;
 bool STOPFlag = false;  // 0选左1选右
 #define defultSpeed 70        //[speed]默认速度
@@ -251,7 +255,8 @@ bool STOPFlag = false;  // 0选左1选右
 #define enterCIRCLEcount 5    //[circle]进入计数
 #define outCIRCLEcount 3      //[circle]退出计数
 #define circle_factor 1.6
-
+#define crosstime 50
+int16_t crosscount = 0;
 
 struct muxinfo M = {.CIRCLECounterin = 0, .CIRCLECounterout = 0, .CIRCLEFlag = 0, .circleArrow = 3};
 bool circleDirFlag[4] = {1, 0, 0, 1};
@@ -370,6 +375,7 @@ float computeMUXVal() {
     if (M.LEDCounter == 12) {
         current_state = STRAIGHT;  // 道路交叉
         SHARPlastside = 0;
+        crosscount = 1;
         if (angle_effective(0, 30000) && real_distance > 700000) {
             circletrigger[0] = 0;
             circletrigger[1] = 0;
@@ -406,6 +412,13 @@ float computeMUXVal() {
     // 输出计算
     float result = 0;
     float base_error = (M.centroid - 5.5) * 50;  // 基础偏差 [-275, 275]
+    if(crosscount) {
+        crosscount++;
+        current_state = STRAIGHT;
+        if(crosscount == crosstime) crosscount = 0;
+    }
+        
+
     switch (current_state) {
         case STRAIGHT:
             result = base_error * 1.3;  // 正常响应
@@ -419,10 +432,9 @@ float computeMUXVal() {
             break;
 
         case SHARP_TURN:
-            result = SHARPlastside < 0 ? -sharpROT : sharpROT;
-            result = SHARPlastside == 0 ? 0 : result;
+            result = IN.flag ? sharpROT : -sharpROT;
             
-            speed_factor = 0.5;
+            speed_factor = 0.4;
             break;
         case OUTLINE_SHARP:
             result = IN.flag ? sharpROT : -sharpROT;
@@ -448,6 +460,9 @@ float computeMUXVal() {
             speed_factor = 1.0;
             break;
     }
+
+    //if(target[IN.index][3] % 10 ==1) result = 0;
+    
     if(IN.index < target_num) speed_factor *= (target[IN.index][3] / 100.0f);
     UARTCounter++;
     if (UARTCounter % timeUART == 0) {  ////////////
