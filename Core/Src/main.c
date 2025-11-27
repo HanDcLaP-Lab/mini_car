@@ -81,6 +81,10 @@ typedef struct {
     float k;  // 卡尔曼增益
 } KalmanFilter1;
 //--------------------------------------------------------------------------//
+int fputc(int ch, FILE* f) {
+    HAL_UART_Transmit(&huart3, (uint8_t*)&ch, 1, 0xffff);
+    return ch;
+}
 // 初始化函数
 void Kalman_Init(KalmanFilter1* kf, float q, float r, float initial_value) {
     kf->q = q;
@@ -108,6 +112,7 @@ struct muxinfo {
     int16_t CIRCLECounterin, CIRCLECounterout;  // 初始为0
     uint8_t circleArrow;                        // 初始为3
     bool CIRCLEFlag;                            // 0
+    uint8_t rise_edge_num;
 };
 
 //--------------------PID-----------------------------
@@ -153,18 +158,20 @@ void ComputePID_DualPD(struct PIDController_DualPD* pid, float measuredVal, int1
 float gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z;  // 陀螺仪数据
 struct PIDController L = {.Kp = 63, .Ki = 0.6, .Kd = 0.13, .targetVal = 0, .currentError = 0, .preError = 0, .derivative = 0, .integral = 0};
 struct PIDController R = {.Kp = 63, .Ki = 0.6, .Kd = 0.13, .targetVal = 0, .currentError = 0, .preError = 0, .derivative = 0, .integral = 0};  // PID调参
-struct PIDController_DualPD ROT = {.Kp = 0.1, .Kp2 = 0.00008, .Kd = 0.02, .gKd = -0.082, .targetVal = 0, .currentError = 0, .preError = 0, .derivative = 0};
+struct PIDController_DualPD ROT = {.Kp = 0.15, .Kp2 = 0.00008, .Kd = 0.03, .gKd = -0.082, .targetVal = 0, .currentError = 0, .preError = 0, .derivative = 0};
 
 //-------------------偏差计算-------------------------
 int16_t MUX_Weight[12] = {230, -170, -25, -13, -6, -4, 4, 6, 13, 25, 170, 230};
 int16_t UARTCounter = 0, OUTCounter = 0, ANGCounter = 0;
+int16_t crossCounter = 0;
 uint16_t current_time = 0;
+uint16_t roundtime = 0;
 float speed_factor = 1.0;
 float angle = 0;
 int16_t loop = 0;
 long int real_distance = 0;
 bool STOPFlag = false, TURNFlag = false;  // 0选左1选右
-int16_t defultSpeed  = 85;        //[speed]默认速度
+int16_t defultSpeed  = 75;        //[speed]默认速度
 #define maxSpeed 350          //[speed]最大速度
 #define maxDEV 750            //[stop]最大偏出赛道的时间
 #define maxTIME 36000         //[stop]此时间后停车
@@ -173,11 +180,12 @@ int16_t defultSpeed  = 85;        //[speed]默认速度
 #define sharpROT 660          //[sharp]“急弯”态的默认MUXVal输出//570
 #define minsharpFactor 0.04   //[sharp]“急弯”态的最小输出乘数
 #define dersharpFactor 0.002  //[sharp]“急弯”态每ms的输出减少的比重 [用置零的方式暂时停用]
-#define timeRECOVERING 90     //[recovering]“恢复”态时长，用于直角弯检测消抖
-#define timeUART 20          //[uart]每次UART发送间隔的中断数
+#define timeRECOVERING 40     //[recovering]“恢复”态时长，用于直角弯检测消抖
+#define timeUART 200          //[uart]每次UART发送间隔的中断数
 #define enterCIRCLEcount 5    //[circle]进入计数
 #define outCIRCLEcount 3      //[circle]退出计数
 #define circle_factor 1.6
+#define crossTime 50
 typedef enum {
     STRAIGHT,         // 0
     GENTLE_CURVE,     // 1
@@ -193,7 +201,7 @@ STATE last_state = STRAIGHT;
 float sharp_factor = 1.0;
 uint16_t recCounter = 0;
 
-struct muxinfo M = {.CIRCLECounterin = 0, .CIRCLECounterout = 0, .CIRCLEFlag = 0, .circleArrow = 3};
+struct muxinfo M = {.CIRCLECounterin = 0, .CIRCLECounterout = 0, .CIRCLEFlag = 0, .circleArrow = 3,.rise_edge_num = 0};
 bool circleDirFlag[4] = {1, 0, 0, 1};
 bool circletrigger[4] = {0, 0, 0, 0};
 bool angle_effective(int input, int error_max) {
@@ -211,7 +219,8 @@ void M_Uptate(struct muxinfo* M) {
     M->Lmost = 12;
     M->Rmost = -1;
     // GapCounter记录第一段灯结束至第二段灯开始的不亮的灯数；或是若没有第二段灯，则记录从第一段灯结束至最后一共不亮的灯
-    int8_t cirLCounter = 0, cirRCounter = 0, rise_edge_num = 0;
+    int8_t cirLCounter = 0, cirRCounter = 0;
+    M->rise_edge_num = 0;
     bool LFlag = 0;  // GapFlag标记是否可以计数，LFlag标记是否是第一段灯
     bool MUX[12] = {0};
     for (int i = 0; i <= 11; i++) {
@@ -219,7 +228,7 @@ void M_Uptate(struct muxinfo* M) {
     }
     for (int i = 0; i <= 11; i++) {
         if (i && MUX[i - 1] < MUX[i] || i == 0 && MUX[i]) {
-            rise_edge_num++;
+            M->rise_edge_num++;
             LFlag = !LFlag;
         }
         if (MUX[i]) {
@@ -237,7 +246,7 @@ void M_Uptate(struct muxinfo* M) {
             cirRCounter += !LFlag;
         }
     }
-    if (!circletrigger[(M->circleArrow + 1) % 4] && rise_edge_num > 1 &&
+    if (!circletrigger[(M->circleArrow + 1) % 4] && M->rise_edge_num > 1 &&
         (angle_effective(120000, 30000) && M->circleArrow != 2 || angle_effective(150000, 30000) && M->circleArrow != 0) && real_distance > 600000) {
         M->CIRCLECounterin++;  // 进入计数（用于消抖
         if (M->CIRCLECounterin >= enterCIRCLEcount) M->CIRCLEFlag = true;
@@ -256,7 +265,7 @@ void M_Uptate(struct muxinfo* M) {
         M->LEDCounter = circleDirFlag[M->circleArrow] * cirRCounter + !circleDirFlag[M->circleArrow] * cirLCounter;
         // M->LCounter = !circleDirFlag[M->circleArrow];
         // M->RCounter = circleDirFlag[M->circleArrow];
-        if (rise_edge_num < 2) {
+        if (M->rise_edge_num < 2) {
             M->CIRCLECounterout++;  // 退出计数（用于延长响应
             if (M->CIRCLECounterout >= outCIRCLEcount) {
                 M->CIRCLEFlag = false;
@@ -300,9 +309,9 @@ float computeMUXVal() {
             current_state = STRAIGHT;
         } else if (((M.LCounter >= 4 && M.Lmost == 0 && M.Rmost != 11) ||
                     (M.RCounter >= 4 && M.Rmost == 11 && M.Lmost != 0)) &&
-                   M.LEDCounter >= 5) {
+                   M.LEDCounter >= 5 && M.rise_edge_num == 1) {
             current_state = SHARP_TURN;
-            if (last_state != SHARP_TURN && last_state != RECOVERING) SHARPlastside = 0;    // 新的急转，转向计数置零
+            if (last_state != SHARP_TURN) SHARPlastside = 0;    // 新的急转，转向计数置零
             SHARPlastside += M.LCounter > M.RCounter ? -1 : 1;  // 转向计数（消抖处理，防止出界最后时刻的情况不可靠）
         } else if (M.LEDCounter >= 3) {
             current_state = GENTLE_CURVE;
@@ -325,6 +334,8 @@ float computeMUXVal() {
 					M.circleArrow = 3;
 					loop++;
         }
+        crossCounter = 1;
+        if(roundtime >= 12000)roundtime = 0; // 重置单圈时间
     }
 
     // 状态恢复检测：从急弯转出至RECOVERING
@@ -342,12 +353,17 @@ float computeMUXVal() {
         }
     }
 
-    last_state = current_state;
-    if (current_state != SHARP_TURN && current_state != OUTLINE_SHARP && current_state != RECOVERING) SHARPlastside = 0;
+    if(crossCounter) {
+        crossCounter++;
+        current_state = STRAIGHT;
+        if(crossCounter == crossTime) crossCounter = 0;
+    }
     
     //
     if(M.CIRCLEFlag) current_state = GENTLE_CURVE;
     //
+    if (current_state != SHARP_TURN && current_state != OUTLINE_SHARP && current_state != RECOVERING) SHARPlastside = 0;
+    last_state = current_state;
 
     // 输出计算
     float result = 0;
@@ -403,8 +419,8 @@ float computeMUXVal() {
             break;
 
         case RECOVERING:
-            result = base_error * 0.8f;
-            speed_factor = 1.0;
+            result = base_error * 1.3f;
+            speed_factor = 0.4;
             break;
     }
 
@@ -424,7 +440,7 @@ float computeMUXVal() {
     
     if (UARTCounter % timeUART == 0) {  ////////////
         
-        printf(" %d\r\n", current_state);
+        //printf(" %d\r\n", current_state);
         result_output = 0;
     } else {  ////////////
         result_output += result;
@@ -437,14 +453,18 @@ int16_t last_pwm_L = 0, last_pwm_R = 0;
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     if (htim == &htim2) {
         current_time++;
-        if(current_time > 4000) defultSpeed = 70;
-        if(current_time > 12000) defultSpeed =85;
+        roundtime++;
+        if(current_time <= 2200) defultSpeed = 86;
+        if(current_time > 2200) defultSpeed = 72;
+        if(current_time > 3000) defultSpeed = 86;
+        if(current_time > 4000) defultSpeed = 72;
+        if(current_time > 12000) defultSpeed = 86;
 		if(loop == 3) STOPFlag = 1; 
         if (current_time > maxTIME) STOPFlag = true;
 
         // 加权偏差
         MUX_get_value(&M.mux_value);
-        Dir_measureVal = Kalman_Update(&encoderROT, computeMUXVal());
+        Dir_measureVal = computeMUXVal();
 
         dodo_BMI270_get_data();
         gyro_z = BMI270_gyro_transition(BMI270_gyro_z);
@@ -483,7 +503,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
         ComputePID(&L, L_measureVal);
 
         pwm = L.output;
-				if(L.targetVal < 0 && L_measureVal > 0) pwm = -4000;
+		if(L.targetVal < 0 && L_measureVal > 0) pwm = -6600;
+        //if(R.targetVal < 0 && R_measureVal > 0) pwm = 6600;
         if (STOPFlag) pwm = 0;
         if (pwm - last_pwm_L > 2000) pwm = last_pwm_L + 2000;  // 变化率限幅
         if (pwm - last_pwm_L < -2000) pwm = last_pwm_L - 2000;
@@ -499,7 +520,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
         }
 
         pwm = R.output;
-				if(R.targetVal < 0 && R_measureVal > 0) pwm = -4000;
+		if(R.targetVal < 0 && R_measureVal > 0) pwm = -6600;
+        //if(L.targetVal < 0 && L_measureVal > 0) pwm = 6600;
         if (STOPFlag) pwm = 0;
         if (pwm - last_pwm_R > 2000) pwm = last_pwm_R + 2000;  // 变化率限幅
         if (pwm - last_pwm_R < -2000) pwm = last_pwm_R - 2000;
