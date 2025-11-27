@@ -71,7 +71,57 @@ static void MX_TIM4_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+//----------------------惯性导航--------------------------------------------------------//
 
+typedef struct {
+    int16_t flag;//脱离赛道后的转向，1为右，0为左
+    long int distance;//
+    float angle;//
+    int index;//
+}in;
+in IN = {.angle = 0, .distance = 0, .flag = 0, .index = 0};
+int16_t target_num = 15;
+int16_t target [15][4] ={
+    //[type(0为正常转向，1为锯齿)][正常转向的默认转向方向，1为右0为左，锯齿为0不启用][正常转向的目标角度(°)，锯齿的默认距离(*0.001)][speed_rate * 100]
+    {0 , 0 , -45 , 120},
+    {0 , 0 , -360 , 100},
+    {0 , 0 , -45 , 120},
+    {1 , 0 , 80 , 100},
+    {0 , 0 , -180 , 100},
+    {1 , 0 , 60 , 100},
+    {0 , 1 , 180 , 100},
+    {0 , 0 , -90 , 100},
+    {0 , 1 , 180 , 100},
+    {0 , 0 , -180 , 100},
+    {1 , 0 , 80 , 100},
+    {0 , 0 , -180 , 120},
+    {0 , 1 , 135 , 120},
+    {0 , 0 , -360 , 100},
+    {0 , 0 , -135 , 120}
+
+};
+void IN_update(in * obj){
+    //正常转向模式
+    if(target[obj->index][0]){
+        //达到目标
+        if(obj->angle == target[obj->index][2] * 1000){
+            obj->index++;
+            obj->angle = 0;
+            obj->distance = 0;
+        }
+        obj->flag = target[obj->index][1];
+    }
+    else{//锯齿模式
+        if(obj->distance == target[obj->index][2] * 1000){
+            obj->index++;
+            obj->distance = 0;
+        }
+        //
+        if(obj->angle > 0) obj->flag = 0;
+        else obj->flag = 1;
+
+    }
+}
 //---------------------一元卡尔曼滤波--------------------------------------------//
 typedef struct {
     float x;  // 状态变量（估计的速度/脉冲数）
@@ -156,11 +206,10 @@ struct PIDController R = {.Kp = 63, .Ki = 0.6, .Kd = 0.13, .targetVal = 0, .curr
 struct PIDController_DualPD ROT = {.Kp = 0.1, .Kp2 = 0.00008, .Kd = 0.02, .gKd = -0.082, .targetVal = 0, .currentError = 0, .preError = 0, .derivative = 0};
 
 //-------------------偏差计算-------------------------
-int16_t MUX_Weight[12] = {230, -170, -25, -13, -6, -4, 4, 6, 13, 25, 170, 230};
 int16_t UARTCounter = 0, OUTCounter = 0, ANGCounter = 0;
 uint16_t current_time = 0;
 float speed_factor = 1.0;
-float angle = 0;
+float real_angle = 0;
 long int real_distance = 0;
 bool STOPFlag = false, TURNFlag = false;  // 0选左1选右
 #define defultSpeed 75        //[speed]默认速度
@@ -196,7 +245,7 @@ struct muxinfo M = {.CIRCLECounterin = 0, .CIRCLECounterout = 0, .CIRCLEFlag = 0
 bool circleDirFlag[4] = {1, 0, 0, 1};
 bool circletrigger[4] = {0, 0, 0, 0};
 bool angle_effective(int input, int error_max) {
-    int angle_res = ((int)angle - input) % 360000;
+    int angle_res = ((int)real_angle - input) % 360000;
     return (angle_res > 360000 - error_max || angle_res < error_max);
 }
 
@@ -315,7 +364,8 @@ float computeMUXVal() {
             circletrigger[2] = 0;
             circletrigger[3] = 0;
             real_distance = 0;
-					M.circleArrow = 3;
+			M.circleArrow = 3;
+            IN.index =0;
         }
     }
 
@@ -363,16 +413,13 @@ float computeMUXVal() {
             speed_factor = 0.3;
             break;
         case OUTLINE_SHARP:
-            result = SHARPlastside < 0 ? -sharpROT : sharpROT;
-            result = SHARPlastside == 0 ? 0 : result;
+            result = IN.flag ? sharpROT : -sharpROT;
+            //result = SHARPlastside == 0 ? 0 : result;
             speed_factor = 0.3;
             break;
         case OUTLINE_DEFAULT:
-            result = last_reliable_error;
-            if (result > 500)
-                result = 500;
-            else if (result < -500)
-                result = -500;
+            result = IN.flag ? 400 : -400;
+            
             speed_factor = 1.0;
             break;
         case EDGE:
@@ -404,6 +451,7 @@ int16_t last_pwm_L = 0, last_pwm_R = 0;
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     if (htim == &htim2) {
         current_time++;
+        if(IN.index < target_num) IN_update(&IN);
         if (current_time > maxTIME) STOPFlag = true;
 
         // 加权偏差
@@ -412,7 +460,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
 
         dodo_BMI270_get_data();
         gyro_z = BMI270_gyro_transition(BMI270_gyro_z);
-        angle -= gyro_z;
+        real_angle -= gyro_z;
+        IN.angle -=gyro_z;
         if (fabs(gyro_z) > warnANG)
             ANGCounter++;
         else
@@ -438,6 +487,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
         L_measureVal = -(int16_t)__HAL_TIM_GET_COUNTER(&htim4);  // 获取左右轮速度
         R_measureVal = -(int16_t)__HAL_TIM_GET_COUNTER(&htim3);
         real_distance += (L_measureVal + R_measureVal) / 2;
+        IN.distance += (L_measureVal + R_measureVal) / 2;
         __HAL_TIM_SET_COUNTER(&htim3, 0);
         __HAL_TIM_SET_COUNTER(&htim4, 0);
         L_measureVal = (int16_t)(Kalman_Update(&encoderSpeedL, L_measureVal));  // 卡尔曼滤波
