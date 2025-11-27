@@ -164,7 +164,7 @@ float angle = 0;
 int16_t loop = 0;
 long int real_distance = 0;
 bool STOPFlag = false, TURNFlag = false;  // 0选左1选右
-#define defultSpeed 72        //[speed]默认速度
+int16_t defultSpeed  = 85;        //[speed]默认速度
 #define maxSpeed 350          //[speed]最大速度
 #define maxDEV 750            //[stop]最大偏出赛道的时间
 #define maxTIME 36000         //[stop]此时间后停车
@@ -321,7 +321,7 @@ float computeMUXVal() {
             circletrigger[2] = 0;
             circletrigger[3] = 0;
             real_distance = 0;
-					time = 0;
+					current_time = 0;
 					M.circleArrow = 3;
 					loop++;
         }
@@ -437,7 +437,9 @@ int16_t last_pwm_L = 0, last_pwm_R = 0;
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     if (htim == &htim2) {
         current_time++;
-			if(loop == 3) STOPFlag = 1; 
+        if(current_time > 4000) defultSpeed = 70;
+        if(current_time > 12000) defultSpeed =85;
+		if(loop == 3) STOPFlag = 1; 
         if (current_time > maxTIME) STOPFlag = true;
 
         // 加权偏差
