@@ -83,17 +83,17 @@ in IN = {.angle = 0, .distance = 0, .flag = 0, .index = 0};
 int16_t target_num = 15;
 int16_t target [15][4] ={
     //[type(0为正常转向，1为锯齿)][正常转向的默认转向方向，1为右0为左，锯齿为0不启用][正常转向的目标角度(°)，锯齿的默认距离(*0.001)][speed_rate * 100]
-    {0 , 0 , -45 , 120},
+    {0 , 0 , -45 , 100},
     {0 , 0 , -360 , 100},
     {0 , 0 , -45 , 120},
-    {1 , 0 , 80 , 100},
+    {1 , 0 , 60 , 100},//锯齿1
     {0 , 0 , -180 , 100},
-    {1 , 0 , 60 , 100},
+    {1 , 0 , 30 , 100},//锯齿2
     {0 , 1 , 180 , 100},
     {0 , 0 , -90 , 100},
     {0 , 1 , 180 , 100},
     {0 , 0 , -180 , 100},
-    {1 , 0 , 80 , 100},
+    {1 , 0 , 80 , 100},//锯齿3
     {0 , 0 , -180 , 120},
     {0 , 1 , 135 , 120},
     {0 , 0 , -360 , 100},
@@ -104,7 +104,7 @@ void IN_update(in * obj){
     //正常转向模式
     if(target[obj->index][0]){
         //达到目标
-        if(obj->angle == target[obj->index][2] * 1000){
+        if(fabs(obj->angle) >= fabs(target[obj->index][2] * 1000)) {
             obj->index++;
             obj->angle = 0;
             obj->distance = 0;
@@ -112,7 +112,7 @@ void IN_update(in * obj){
         obj->flag = target[obj->index][1];
     }
     else{//锯齿模式
-        if(obj->distance == target[obj->index][2] * 1000){
+        if(obj->distance > target[obj->index][2] * 1000){
             obj->index++;
             obj->distance = 0;
         }
@@ -436,12 +436,18 @@ float computeMUXVal() {
             speed_factor = 1.0;
             break;
     }
-
+    if(IN.index < target_num) speed_factor *= (target[IN.index][3] / 100.0f);
+    UARTCounter++;
+    if (UARTCounter % timeUART == 0) {  ////////////
+        printf(" %d , %d\r\n", IN.index , IN.flag);
+        UARTCounter = 0;
+    }
+        
     // 保存可靠误差值
     if (M.LEDCounter > 0) {
         last_reliable_error = result;
     }
-
+    
     return result;
 }
 
@@ -585,6 +591,8 @@ int main(void) {
     /* Infinite loop */
     /* USER CODE BEGIN WHILE */
     while (1) {
+        HAL_Delay(200);
+        printf("%d , %d \n" , IN.index , IN.flag);
         /*
             L.targetVal=160;
             R.targetVal=160;
