@@ -161,7 +161,7 @@ struct muxinfo {
 };
 
 //--------------------PID-----------------------------
-#define integralLimit 12000
+#define integralLimit 20000
 struct PIDController {
     int16_t targetVal;   // 目标
     float currentError;  // 当前误差
@@ -212,7 +212,7 @@ float speed_factor = 1.0;
 float real_angle = 0;
 long int real_distance = 0;
 bool STOPFlag = false, TURNFlag = false;  // 0选左1选右
-#define defultSpeed 75        //[speed]默认速度
+#define defultSpeed 70        //[speed]默认速度
 #define maxSpeed 350          //[speed]最大速度
 #define maxDEV 750            //[stop]最大偏出赛道的时间
 #define maxTIME 33000         //[stop]此时间后停车
