@@ -72,85 +72,6 @@ static void MX_TIM4_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-int fputc(int ch, FILE* f) {
-    HAL_UART_Transmit(&huart3, (uint8_t*)&ch, 1, 0xffff);
-    return ch;
-}
-
-
-typedef enum {
-    STRAIGHT,         // 0
-    GENTLE_CURVE,     // 1
-    SHARP_TURN,       // 2
-    EDGE,             // 3
-    RECOVERING,       // 4
-    OUTLINE_DEFAULT,  // 5
-    OUTLINE_SHARP     // 6
-} STATE;
-
-STATE current_state = STRAIGHT;
-STATE last_state = STRAIGHT;
-float sharp_factor = 1.0;
-uint16_t recCounter = 0;
-float real_angle = 0;
-#define TOLERANCE 10000
-//----------------------惯性导航--------------------------------------------------------//
-
-typedef struct {
-    int16_t flag;//脱离赛道后的转向，1为右，0为左
-    long int distance;//
-    float angle;//
-    int index;//
-}in;
-in IN = {.angle = 0, .distance = 0, .flag = 0, .index = 0};
-int16_t target_num = 15;
-int16_t target [15][4] ={
-    //[type(0为正常转向，1为锯齿)][正常转向的默认转向方向，1为右0为左，锯齿为0不启用][正常转向的目标角度(°)，锯齿的默认距离(*0.001)][speed_rate * 100]
-    {0 , 0 , -45 , 120},
-
-		{0 , 0 , -360 , 110},
-    {0 , 0 , -45 , 120},
-    {1 , 0 , 55 , 100},//锯齿1
-    {0 , 0 , -180 , 100},
-    {1 , 0 , 36 , 100},//锯齿2
-    {0 , 1 , 180 , 100},
-    {0 , 0 , -90 , 100},
-    {0 , 1 , 180 , 100},
-    {0 , 0 , -180 , 100},
-    {1 , 0 , 80 , 100},//锯齿3
-    {0 , 0 , -180 , 120},
-    {0 , 1 , 135 , 120},
-    {0 , 0 , -360 , 100},
-    {0 , 0 , -135 , 120} 
-
-};
-void IN_update(in * obj){
-    //正常转向模式
-    if(target[obj->index][0] == 0){
-        //达到目标
-        if(fabs(obj->angle) >= fabs(target[obj->index][2] * 1000.0) - TOLERANCE && 
-        current_state !=OUTLINE_DEFAULT&&current_state != OUTLINE_SHARP) {
-            
-            obj->angle -= target[obj->index][2] * 1000.0;
-            obj->index++;
-            obj->distance = 0;
-        }
-        obj->flag = target[obj->index][1];
-    }
-    else{//锯齿模式
-        if(obj->distance > target[obj->index][2] * 1000){
-            obj->index++;
-            obj->distance = 0;
-        }
-        //
-        if(current_state != OUTLINE_DEFAULT&&current_state != OUTLINE_SHARP)
-        {
-            if(obj->angle > 0) obj->flag = 0;
-            else obj->flag = 1;
-        }
-
-    }
-}
 //---------------------一元卡尔曼滤波--------------------------------------------//
 typedef struct {
     float x;  // 状态变量（估计的速度/脉冲数）
@@ -190,7 +111,7 @@ struct muxinfo {
 };
 
 //--------------------PID-----------------------------
-#define integralLimit 20000
+#define integralLimit 12000
 struct PIDController {
     int16_t targetVal;   // 目标
     float currentError;  // 当前误差
@@ -235,34 +156,48 @@ struct PIDController R = {.Kp = 63, .Ki = 0.6, .Kd = 0.13, .targetVal = 0, .curr
 struct PIDController_DualPD ROT = {.Kp = 0.1, .Kp2 = 0.00008, .Kd = 0.02, .gKd = -0.082, .targetVal = 0, .currentError = 0, .preError = 0, .derivative = 0};
 
 //-------------------偏差计算-------------------------
+int16_t MUX_Weight[12] = {230, -170, -25, -13, -6, -4, 4, 6, 13, 25, 170, 230};
 int16_t UARTCounter = 0, OUTCounter = 0, ANGCounter = 0;
 uint16_t current_time = 0;
 float speed_factor = 1.0;
-
+float angle = 0;
+int16_t loop = 0;
 long int real_distance = 0;
-bool STOPFlag = false;  // 0选左1选右
-#define defultSpeed 70        //[speed]默认速度
+bool STOPFlag = false, TURNFlag = false;  // 0选左1选右
+#define defultSpeed 72        //[speed]默认速度
 #define maxSpeed 350          //[speed]最大速度
 #define maxDEV 750            //[stop]最大偏出赛道的时间
-#define maxTIME 33000         //[stop]此时间后停车
+#define maxTIME 36000         //[stop]此时间后停车
 #define warnANG 150           //[stop]角速度预警，大于此速度开始计时
 #define maxANG 1000           //[stop]空转限，角速度连续此时间大于预警值，将停止
-#define sharpROT 570          //[sharp]“急弯”态的默认MUXVal输出//570
+#define sharpROT 660          //[sharp]“急弯”态的默认MUXVal输出//570
 #define minsharpFactor 0.04   //[sharp]“急弯”态的最小输出乘数
 #define dersharpFactor 0.002  //[sharp]“急弯”态每ms的输出减少的比重 [用置零的方式暂时停用]
-#define timeRECOVERING 80     //[recovering]“恢复”态时长，用于直角弯检测消抖
-#define timeUART 200          //[uart]每次UART发送间隔的中断数
+#define timeRECOVERING 90     //[recovering]“恢复”态时长，用于直角弯检测消抖
+#define timeUART 20          //[uart]每次UART发送间隔的中断数
 #define enterCIRCLEcount 5    //[circle]进入计数
 #define outCIRCLEcount 3      //[circle]退出计数
 #define circle_factor 1.6
-#define crosstime 50
-int16_t crosscount = 0;
+typedef enum {
+    STRAIGHT,         // 0
+    GENTLE_CURVE,     // 1
+    SHARP_TURN,       // 2
+    EDGE,             // 3
+    RECOVERING,       // 4
+    OUTLINE_DEFAULT,  // 5
+    OUTLINE_SHARP     // 6
+} STATE;
+
+STATE current_state = STRAIGHT;
+STATE last_state = STRAIGHT;
+float sharp_factor = 1.0;
+uint16_t recCounter = 0;
 
 struct muxinfo M = {.CIRCLECounterin = 0, .CIRCLECounterout = 0, .CIRCLEFlag = 0, .circleArrow = 3};
 bool circleDirFlag[4] = {1, 0, 0, 1};
 bool circletrigger[4] = {0, 0, 0, 0};
 bool angle_effective(int input, int error_max) {
-    int angle_res = ((int)real_angle - input) % 360000;
+    int angle_res = ((int)angle - input) % 360000;
     return (angle_res > 360000 - error_max || angle_res < error_max);
 }
 
@@ -337,6 +272,11 @@ float computeMUXVal() {
     static int16_t SHARPlastside = 0;
     static float last_reliable_error = 0;
 
+    // 【新增】定义20个长度的历史记录缓冲区
+    static float history_result[20] = {0}; 
+    static uint8_t history_idx = 0;        
+    static uint8_t history_count = 0;      
+
     M_Uptate(&M);
     //  状态判断
     // 出线判断
@@ -362,7 +302,7 @@ float computeMUXVal() {
                     (M.RCounter >= 4 && M.Rmost == 11 && M.Lmost != 0)) &&
                    M.LEDCounter >= 5) {
             current_state = SHARP_TURN;
-            if (last_state != SHARP_TURN) SHARPlastside = 0;    // 新的急转，转向计数置零
+            if (last_state != SHARP_TURN && last_state != RECOVERING) SHARPlastside = 0;    // 新的急转，转向计数置零
             SHARPlastside += M.LCounter > M.RCounter ? -1 : 1;  // 转向计数（消抖处理，防止出界最后时刻的情况不可靠）
         } else if (M.LEDCounter >= 3) {
             current_state = GENTLE_CURVE;
@@ -375,15 +315,15 @@ float computeMUXVal() {
     if (M.LEDCounter == 12) {
         current_state = STRAIGHT;  // 道路交叉
         SHARPlastside = 0;
-        crosscount = 1;
         if (angle_effective(0, 30000) && real_distance > 700000) {
             circletrigger[0] = 0;
             circletrigger[1] = 0;
             circletrigger[2] = 0;
             circletrigger[3] = 0;
             real_distance = 0;
-			M.circleArrow = 3;
-            IN.index =0;
+					time = 0;
+					M.circleArrow = 3;
+					loop++;
         }
     }
 
@@ -412,13 +352,6 @@ float computeMUXVal() {
     // 输出计算
     float result = 0;
     float base_error = (M.centroid - 5.5) * 50;  // 基础偏差 [-275, 275]
-    if(crosscount) {
-        crosscount++;
-        current_state = STRAIGHT;
-        if(crosscount == crosstime) crosscount = 0;
-    }
-        
-
     switch (current_state) {
         case STRAIGHT:
             result = base_error * 1.3;  // 正常响应
@@ -432,18 +365,32 @@ float computeMUXVal() {
             break;
 
         case SHARP_TURN:
-            result = IN.flag ? sharpROT : -sharpROT;
+            result = SHARPlastside < 0 ? -sharpROT : sharpROT;
+            result = SHARPlastside == 0 ? 0 : result;
             
-            speed_factor = 0.4;
+            speed_factor = 0.3;
             break;
         case OUTLINE_SHARP:
-            result = IN.flag ? sharpROT : -sharpROT;
-            //result = SHARPlastside == 0 ? 0 : result;
-            speed_factor = 0.4;
+            result = SHARPlastside < 0 ? -sharpROT : sharpROT;
+            result = SHARPlastside == 0 ? 0 : result;
+            speed_factor = 0.3;
             break;
         case OUTLINE_DEFAULT:
-            result = IN.flag ? 400 : -400;
-            
+            // 【修改】使用历史前20个均值替代单一的last_reliable_error
+            if (history_count > 0) {
+                float sum = 0;
+                for (int i = 0; i < history_count; i++) {
+                    sum += history_result[i];
+                }
+                result = sum / history_count;
+            } else {
+                result = last_reliable_error; // 启动保护：如果无历史数据，仍使用旧值
+            }
+
+            if (result > 500)
+                result = 500;
+            else if (result < -500)
+                result = -500;
             speed_factor = 1.0;
             break;
         case EDGE:
@@ -461,31 +408,36 @@ float computeMUXVal() {
             break;
     }
 
-    //if(target[IN.index][3] % 10 ==1) result = 0;
-    
-    if(IN.index < target_num) speed_factor *= (target[IN.index][3] / 100.0f);
-    UARTCounter++;
-    if (UARTCounter % timeUART == 0) {  ////////////
-        printf(" %d , %d , angle:%.2f , dis:%ld\r\n", IN.index , IN.flag , IN.angle , IN.distance);
-        //UARTCounter = 0;
-    }
-        
     // 保存可靠误差值
     if (M.LEDCounter > 0) {
         last_reliable_error = result;
+
+        // 【新增】更新环形缓冲区（仅在不丢线时记录）
+        history_result[history_idx] = result;
+        history_idx++;
+        if (history_idx >= 20) history_idx = 0; // 环形回绕
+        if (history_count < 20) history_count++; // 记录有效数据个数
     }
+
+		// UART输出
+    static float result_output = 0;
     
+    if (UARTCounter % timeUART == 0) {  ////////////
+        
+        printf(" %d\r\n", current_state);
+        result_output = 0;
+    } else {  ////////////
+        result_output += result;
+    }
     return result;
 }
-
 //-----------------------中断回调---------------------
 int16_t L_measureVal, R_measureVal, ANG_measureVal, Dir_measureVal, pwm = 0;
 int16_t last_pwm_L = 0, last_pwm_R = 0;
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     if (htim == &htim2) {
         current_time++;
-        if(IN.index >= target_num) STOPFlag = 1;
-        IN_update(&IN);
+			if(loop == 3) STOPFlag = 1; 
         if (current_time > maxTIME) STOPFlag = true;
 
         // 加权偏差
@@ -494,8 +446,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
 
         dodo_BMI270_get_data();
         gyro_z = BMI270_gyro_transition(BMI270_gyro_z);
-        real_angle -= gyro_z;
-        IN.angle -=gyro_z;
+        angle -= gyro_z;
         if (fabs(gyro_z) > warnANG)
             ANGCounter++;
         else
@@ -521,7 +472,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
         L_measureVal = -(int16_t)__HAL_TIM_GET_COUNTER(&htim4);  // 获取左右轮速度
         R_measureVal = -(int16_t)__HAL_TIM_GET_COUNTER(&htim3);
         real_distance += (L_measureVal + R_measureVal) / 2;
-        IN.distance += (L_measureVal + R_measureVal) / 2;
         __HAL_TIM_SET_COUNTER(&htim3, 0);
         __HAL_TIM_SET_COUNTER(&htim4, 0);
         L_measureVal = (int16_t)(Kalman_Update(&encoderSpeedL, L_measureVal));  // 卡尔曼滤波
@@ -531,6 +481,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
         ComputePID(&L, L_measureVal);
 
         pwm = L.output;
+				if(L.targetVal < 0 && L_measureVal > 0) pwm = -4000;
         if (STOPFlag) pwm = 0;
         if (pwm - last_pwm_L > 2000) pwm = last_pwm_L + 2000;  // 变化率限幅
         if (pwm - last_pwm_L < -2000) pwm = last_pwm_L - 2000;
@@ -546,6 +497,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
         }
 
         pwm = R.output;
+				if(R.targetVal < 0 && R_measureVal > 0) pwm = -4000;
         if (STOPFlag) pwm = 0;
         if (pwm - last_pwm_R > 2000) pwm = last_pwm_R + 2000;  // 变化率限幅
         if (pwm - last_pwm_R < -2000) pwm = last_pwm_R - 2000;
@@ -610,7 +562,7 @@ int main(void) {
 
     Kalman_Init(&encoderSpeedL, 0.03f, 2.0f, 0.0f);  // 卡尔曼初始化
     Kalman_Init(&encoderSpeedR, 0.03f, 2.0f, 0.0f);
-    Kalman_Init(&encoderROT, 0.5f, 100.0f, 0.0f);
+    Kalman_Init(&encoderROT, 0.5f, 30.0f, 0.0f);
 
     // L.targetVal=150;
     // R.targetVal=150;
@@ -619,8 +571,6 @@ int main(void) {
     /* Infinite loop */
     /* USER CODE BEGIN WHILE */
     while (1) {
-        HAL_Delay(200);
-        printf("%d , %d \n" , IN.index , IN.flag);
         /*
             L.targetVal=160;
             R.targetVal=160;
