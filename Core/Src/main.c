@@ -172,11 +172,11 @@ int16_t loop = 0;
 long int real_distance = 0;
 bool STOPFlag = false, TURNFlag = false;  // 0选左1选右
 int16_t defultSpeed  = 75;        //[speed]默认速度
-#define maxSpeed 400          //[speed]最大速度
+#define maxSpeed 350          //[speed]最大速度
 #define maxDEV 750            //[stop]最大偏出赛道的时间
-#define maxTIME 40000         //[stop]此时间后停车
-#define warnANG 300           //[stop]角速度预警，大于此速度开始计时
-#define maxANG 3000           //[stop]空转限，角速度连续此时间大于预警值，将停止
+#define maxTIME 36000         //[stop]此时间后停车
+#define warnANG 250           //[stop]角速度预警，大于此速度开始计时
+#define maxANG 2000           //[stop]空转限，角速度连续此时间大于预警值，将停止
 #define sharpROT 590          //[sharp]“急弯”态的默认MUXVal输出//570
 #define minsharpFactor 0.04   //[sharp]“急弯”态的最小输出乘数
 #define dersharpFactor 0.002  //[sharp]“急弯”态每ms的输出减少的比重 [用置零的方式暂时停用]
@@ -454,23 +454,23 @@ int16_t last_pwm_L = 0, last_pwm_R = 0;
 int16_t stop_cnt = 0;
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     if (htim == &htim2) {
-        current_time++; 
+        current_time++;
         roundtime++;
-        if(roundtime <= 1950) defultSpeed = 88;
-        if(roundtime > 1950)  defultSpeed = 78;
-			  if(roundtime > 2700)  defultSpeed = 85;
-        if(roundtime > 3300)  defultSpeed = 72;       
-        
-        if(roundtime > 9550) defultSpeed = 88 ;//defultSpeed = 86;6400
-			  
-			
+        if(roundtime <= 2000) defultSpeed = 82;
+        if(roundtime > 2000)  defultSpeed = 75;
+        if(roundtime > 2800) defultSpeed = 82;
+        if(roundtime > 3400) defultSpeed = 70;
+        if(roundtime > 10000) defultSpeed = 88;
+			  if(roundtime > 11700) defultSpeed = 84;
+			if(roundtime > 13300) defultSpeed = 88;
 		if(loop == 3) stop_cnt = 1; 
-        if (current_time > maxTIME) STOPFlag = true;
-        if(stop_cnt)
+			if(stop_cnt)
         {
             stop_cnt++;
             if(stop_cnt > 200) STOPFlag = 1;
         }
+        if (current_time > maxTIME) STOPFlag = true;
+
         // 加权偏差
         MUX_get_value(&M.mux_value);
         Dir_measureVal = computeMUXVal();
